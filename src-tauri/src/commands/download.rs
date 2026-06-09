@@ -73,7 +73,7 @@ pub fn sync_downloads(state: State<'_, Mutex<AppState>>) -> Result<String, Strin
                 d.gid, d.status, d.completed_length, d.total_length, progress * 100.0, file_path));
 
             let updated = conn.execute(
-                "UPDATE episodes SET status='active', progress=?1, file_path=?2 WHERE gid=?3 AND subscription_id='manual'",
+                "UPDATE episodes SET status='active', progress=?1, file_path=?2 WHERE gid=?3",
                 rusqlite::params![progress, file_path, d.gid],
             ).unwrap_or(0);
             log.push_str(&format!("  DB updated: {} rows for gid={}\n", updated, d.gid));
@@ -97,7 +97,7 @@ pub fn sync_downloads(state: State<'_, Mutex<AppState>>) -> Result<String, Strin
 
             let status = if d.status == "complete" { "completed" } else { "failed" };
             conn.execute(
-                "UPDATE episodes SET status=?1, file_path=?2 WHERE gid=?3 AND subscription_id='manual'",
+                "UPDATE episodes SET status=?1, file_path=?2 WHERE gid=?3",
                 rusqlite::params![status, file_path, d.gid],
             ).ok();
             }
