@@ -100,6 +100,26 @@ pub fn sync_downloads(state: State<'_, Mutex<AppState>>) -> Result<String, Strin
                 "UPDATE episodes SET status=?1, file_path=?2 WHERE gid=?3",
                 rusqlite::params![status, file_path, d.gid],
             ).ok();
+
+            // When download finishes (complete or failed), clean up aria2-generated .torrent
+            // This is separate from the user's original torrent file — it's the auto-generated
+            // <gid>.torrent that aria2 creates from magnet links or base64 torrent data.
+            // We always delete it regardless of the auto_delete_torrent setting.
+            {
+                let download_dir: String = app.db.get_setting("download_dir").unwrap_or_default();
+                if !download_dir.is_empty() {
+                    let gen_torrent = std::path::Path::new(&download_dir)
+                        .join(format!("{}.torrent", d.gid));
+                    if gen_torrent.exists() {
+                        let _ = std::fs::remove_file(&gen_torrent);
+                    }
+                    let gen_torrent_aria2 = std::path::Path::new(&download_dir)
+                        .join(format!("{}.torrent.aria2", d.gid));
+                    if gen_torrent_aria2.exists() {
+                        let _ = std::fs::remove_file(&gen_torrent_aria2);
+                    }
+                }
+            }
             }
     }
 
@@ -158,65 +178,89 @@ pub fn resume_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<
 }
 
 #[tauri::command]
-pub fn remove_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
-    let (gid, port, file_path) = {
+pub async fn remove_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
+    // Collect all data in ONE lock acquisition
+    let (gid, port, file_path, torrent_url, download_dir, auto_delete) = {
         let app = state.lock().map_err(|e| e.to_string())?;
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
+
         let gid: String = conn.query_row(
             "SELECT gid FROM episodes WHERE id = ?1",
-            rusqlite::params![id],
+            rusqlite::params![&id],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
+
         let file_path: String = conn.query_row(
             "SELECT file_path FROM episodes WHERE id = ?1",
-            rusqlite::params![id],
+            rusqlite::params![&id],
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
-        let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
-        (gid, port, file_path)
-    };
 
-    if !gid.is_empty() && Aria2Manager::port_is_open(port) {
-        let tmp = Aria2Manager::new(port);
-        let _ = tmp.remove(&gid);
-        let _ = tmp.remove_download_result(&gid);
+        let torrent_url: String = conn.query_row(
+            "SELECT torrent_url FROM episodes WHERE id = ?1",
+            rusqlite::params![&id],
+            |row| row.get(0),
+        ).unwrap_or_default();
+
+        let download_dir = app.db.get_setting("download_dir").unwrap_or_default();
+        let auto_delete = app.db.get_setting("auto_delete_torrent").unwrap_or("true".into()) == "true";
+        let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
+
+        (gid, port, file_path, torrent_url, download_dir, auto_delete)
+    }; // ALL locks released here
+
+    // aria2 TCP calls on a blocking thread so we don't freeze the UI.
+    // Use a timeout so a stuck aria2 task won't hang removal forever.
+    let gid_for_aria2 = gid.clone();
+    let port_for_aria2 = port;
+    let aria2_result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::task::spawn_blocking(move || {
+            if !gid_for_aria2.is_empty() && Aria2Manager::port_is_open(port_for_aria2) {
+                let tmp = Aria2Manager::new(port_for_aria2);
+                let _ = tmp.unpause(&gid_for_aria2);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let _ = tmp.remove(&gid_for_aria2);
+                let _ = tmp.remove_download_result(&gid_for_aria2);
+            }
+        })
+    ).await;
+
+    // Timeout or JoinError is non-fatal — we still delete DB and files
+    if let Err(ref e) = aria2_result {
+        eprintln!("[bangumiao] aria2 cleanup timed out or panicked: {}", e);
+    } else if let Err(ref e) = aria2_result.unwrap() {
+        eprintln!("[bangumiao] aria2 cleanup task panicked: {}", e);
     }
 
-    // Delete the downloaded video file
+    // Delete downloaded video file and .aria2 control file
     if !file_path.is_empty() {
         let p = std::path::Path::new(&file_path);
-        if p.exists() {
-            let _ = std::fs::remove_file(p);
-        }
-        // Also delete .aria2 control file
+        if p.exists() { let _ = std::fs::remove_file(p); }
         let aria2_file = file_path.clone() + ".aria2";
         let _ = std::fs::remove_file(&aria2_file);
     }
 
-    // Auto-delete torrent file if setting enabled
-    let torrent_url: String = {
-        let app = state.lock().map_err(|e| e.to_string())?;
-        let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT torrent_url FROM episodes WHERE id = ?1",
-            rusqlite::params![id],
-            |row| row.get(0),
-        ).unwrap_or_default()
-    };
-    let auto_delete: bool = {
-        let app = state.lock().map_err(|e| e.to_string())?;
-        app.db.get_setting("auto_delete_torrent").unwrap_or("true".into()) == "true"
-    };
+    // Delete original torrent file (local path) if setting enabled
     if auto_delete && !torrent_url.is_empty() && torrent_url.ends_with(".torrent") {
         let torrent_path = std::path::Path::new(&torrent_url);
-        if torrent_path.exists() {
-            let _ = std::fs::remove_file(torrent_path);
-        }
+        if torrent_path.exists() { let _ = std::fs::remove_file(torrent_path); }
     }
 
+    // Always clean up aria2-generated <gid>.torrent (from magnet/base64 conversion)
+    if !download_dir.is_empty() && !gid.is_empty() {
+        let generated = std::path::Path::new(&download_dir).join(format!("{}.torrent", gid));
+        if generated.exists() { let _ = std::fs::remove_file(&generated); }
+        let gen_aria2 = std::path::Path::new(&download_dir).join(format!("{}.torrent.aria2", gid));
+        if gen_aria2.exists() { let _ = std::fs::remove_file(&gen_aria2); }
+    }
+
+    // Finally delete from DB (separate lock)
     let app = state.lock().map_err(|e| e.to_string())?;
     let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM episodes WHERE id = ?1", rusqlite::params![id]).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM episodes WHERE id = ?1", rusqlite::params![&id])
+        .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -240,7 +284,6 @@ pub fn add_torrent_download(
             let result = if torrent_url.starts_with("magnet:") {
                 tmp.add_uri(&torrent_url)
             } else if torrent_url.ends_with(".torrent") && std::path::Path::new(&torrent_url).exists() {
-                // Local .torrent file — read and submit as base64
                 match std::fs::read(&torrent_url) {
                     Ok(data) => {
                         let encoded = crate::aria2::base64_encode(&data);
@@ -263,9 +306,7 @@ pub fn add_torrent_download(
                 }
                 Err(e) => {
                     last_err = e;
-                    if i < 4 {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                    }
+                    if i < 4 { std::thread::sleep(std::time::Duration::from_millis(500)); }
                 }
             }
         }
@@ -291,4 +332,38 @@ pub fn add_torrent_download(
         subscription_title: None,
         gid: gid.clone(),
     })
+}
+
+/// Clean up leftover .torrent, .aria2, .torrent.aria2 files in the download directory
+#[tauri::command]
+pub fn clean_download_dir(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let download_dir = {
+        let app = state.lock().map_err(|e| e.to_string())?;
+        app.db.get_setting("download_dir").unwrap_or_default()
+    };
+
+    if download_dir.is_empty() {
+        return Ok("No download directory configured".into());
+    }
+
+    let dir = std::path::Path::new(&download_dir);
+    if !dir.exists() {
+        return Ok(format!("Download directory does not exist: {}", download_dir));
+    }
+
+    let mut cleaned = Vec::new();
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("Cannot read download dir: {}", e))?;
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_torrent_junk = name.ends_with(".torrent")
+            || name.ends_with(".torrent.aria2")
+            || name.ends_with(".aria2");
+        if is_torrent_junk {
+            let _ = std::fs::remove_file(entry.path());
+            cleaned.push(name);
+        }
+    }
+
+    Ok(format!("Cleaned {} files: {}", cleaned.len(), cleaned.join(", ")))
 }

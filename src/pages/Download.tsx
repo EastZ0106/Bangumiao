@@ -87,6 +87,17 @@ export default function Download() {
 
   const [errorMsg, setErrorMsg] = useState("");
 
+  const handleCleanDir = async () => {
+    setErrorMsg("正在清理...");
+    try {
+      const msg = await invoke<string>("clean_download_dir");
+      setErrorMsg(msg);
+      setTimeout(() => setErrorMsg(""), 3000);
+    } catch (e) {
+      setErrorMsg("清理失败: " + String(e));
+    }
+  };
+
   const handleAddTorrent = async () => {
     if (!torrentUrl.trim() || !torrentTitle.trim()) return;
     setSubmitting(true);
@@ -127,6 +138,9 @@ export default function Download() {
           <h1 className="page-title">下载管理</h1>
           <p className="page-subtitle">查看和管理正在下载与已完成的番剧</p>
         </div>
+        <button className="btn btn-outline" onClick={handleCleanDir} style={{ marginRight: 8 }}>
+          清理残留文件
+        </button>
         <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>
           {showForm ? "取消" : "添加下载"}
         </button>

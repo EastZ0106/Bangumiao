@@ -101,6 +101,7 @@ pub fn run() {
             commands::download::resume_download,
             commands::download::remove_download,
             commands::download::add_torrent_download,
+            commands::download::clean_download_dir,
             commands::library::scan_library,
             commands::library::mark_watched,
             commands::mikan::open_mikan_browser,
