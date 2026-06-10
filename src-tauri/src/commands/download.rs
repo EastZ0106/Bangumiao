@@ -63,7 +63,17 @@ pub fn sync_downloads(state: State<'_, Mutex<AppState>>) -> Result<String, Strin
             let total = d.total_length.parse::<u64>().unwrap_or(1) as f64;
             let progress = if total > 0.0 { completed / total } else { 0.0 };
             let file_path = d.files.first().map(|f| f.path.clone()).unwrap_or_default();
-            eprintln!("[sync] active gid={} status={} progress={:.3}", d.gid, d.status, progress);
+            eprintln!("[sync] active gid={} aria2_status={} progress={:.3}", d.gid, d.status, progress);
+            // Only update if user hasn't explicitly paused this episode
+            let current: String = conn.query_row(
+                "SELECT status FROM episodes WHERE gid=?1",
+                rusqlite::params![d.gid],
+                |r| r.get(0),
+            ).unwrap_or_default();
+            if current == "paused" {
+                eprintln!("[sync] active gid={} — skipping update (user paused)", d.gid);
+                continue;
+            }
             conn.execute(
                 "UPDATE episodes SET status='active', progress=?1, file_path=?2 WHERE gid=?3",
                 rusqlite::params![progress, file_path, d.gid],
@@ -115,22 +125,22 @@ pub fn sync_downloads(state: State<'_, Mutex<AppState>>) -> Result<String, Strin
 #[tauri::command]
 pub fn pause_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
     eprintln!("[download] pause_download id={}", id);
+    // Gather data first, release locks before doing aria2 RPC
     let (gid, port) = {
         let app = state.lock().map_err(|e| e.to_string())?;
+        let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
         let gid: String = conn.query_row("SELECT gid FROM episodes WHERE id=?1", rusqlite::params![&id], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
         (gid, port)
     };
+    // RPC without holding any locks
     if !gid.is_empty() && Aria2Manager::port_is_open(port) {
         match Aria2Manager::new(port).pause(&gid) {
-            Ok(_) => eprintln!("[download] pause aria2 ok, updating DB"),
+            Ok(_) => eprintln!("[download] pause aria2 ok"),
             Err(e) => eprintln!("[download] pause aria2 failed: {}", e),
         }
-    } else {
-        eprintln!("[download] pause skip aria2: gid_empty={} port_open={}", gid.is_empty(), Aria2Manager::port_is_open(port));
     }
-    // Always update DB — it's the source of truth for the UI
+    // Update DB — always, this is the source of truth for the UI
     let app = state.lock().map_err(|e| e.to_string())?;
     let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
     conn.execute("UPDATE episodes SET status='paused' WHERE id=?1", rusqlite::params![&id]).map_err(|e| e.to_string())?;
@@ -143,9 +153,9 @@ pub fn resume_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<
     eprintln!("[download] resume_download id={}", id);
     let (gid, port) = {
         let app = state.lock().map_err(|e| e.to_string())?;
+        let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
         let gid: String = conn.query_row("SELECT gid FROM episodes WHERE id=?1", rusqlite::params![&id], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
         (gid, port)
     };
     if !gid.is_empty() && Aria2Manager::port_is_open(port) {
@@ -166,13 +176,15 @@ pub fn remove_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<
     eprintln!("[download] remove_download id={}", id);
     let (gid, file_path, torrent_url, download_dir, auto_delete, port) = {
         let app = state.lock().map_err(|e| e.to_string())?;
+        // Get setting BEFORE locking conn to avoid deadlock
+        let download_dir = app.base_download_dir.to_string_lossy().to_string();
+        let auto_delete = app.db.get_setting("auto_delete_torrent").unwrap_or("true".into()) == "true";
+        let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
+
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
         let gid: String = conn.query_row("SELECT gid FROM episodes WHERE id=?1", rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
         let file_path: String = conn.query_row("SELECT file_path FROM episodes WHERE id=?1", rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
         let torrent_url: String = conn.query_row("SELECT torrent_url FROM episodes WHERE id=?1", rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
-        let download_dir = app.base_download_dir.to_string_lossy().to_string();
-        let auto_delete = app.db.get_setting("auto_delete_torrent").unwrap_or("true".into()) == "true";
-        let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
         conn.execute("DELETE FROM episodes WHERE id=?1", rusqlite::params![&id]).map_err(|e| e.to_string())?;
         eprintln!("[download] remove DB row deleted, gid={} port={} file_path={}", gid, port, file_path);
         (gid, file_path, torrent_url, download_dir, auto_delete, port)
