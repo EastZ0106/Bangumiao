@@ -39,7 +39,10 @@ pub fn save_settings(
     if !settings.download_dir.is_empty() {
         app.base_download_dir = std::path::PathBuf::from(&settings.download_dir);
     } else {
-        app.base_download_dir = std::env::current_dir().unwrap_or_default().join("download");
+        app.base_download_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("download");
     }
     std::fs::create_dir_all(&app.base_download_dir).ok();
     app.db.set_setting("refresh_interval", &settings.refresh_interval.to_string()).map_err(|e| e.to_string())?;

@@ -79,10 +79,16 @@ fn resolve_download_dir(db: &db::Database) -> PathBuf {
         .filter(|d| !d.is_empty());
     match custom {
         Some(d) => PathBuf::from(&d),
-        None => std::env::current_dir()
-            .unwrap_or_default()
-            .join("download"),
+        None => default_download_dir(),
     }
+}
+
+fn default_download_dir() -> PathBuf {
+    // CARGO_MANIFEST_DIR is always src-tauri/ — go up one level to project root
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("download")
 }
 
 #[tauri::command]
