@@ -108,6 +108,7 @@ pub fn run() {
             commands::mikan::close_mikan_browser,
             commands::mikan::update_mikan_browser_bounds,
             commands::mikan::mikan_eval,
+            commands::mikan::scan_mikan_rss,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
