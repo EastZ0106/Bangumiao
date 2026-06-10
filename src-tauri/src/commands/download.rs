@@ -148,7 +148,7 @@ pub fn resume_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<
 #[tauri::command]
 pub fn remove_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
     // Gather data under lock
-    let (gid, file_path, torrent_url, download_dir, auto_delete) = {
+    let (gid, file_path, torrent_url, download_dir, auto_delete, port) = {
         let app = state.lock().map_err(|e| e.to_string())?;
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
         let gid: String = conn.query_row("SELECT gid FROM episodes WHERE id=?1", rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
@@ -156,11 +156,19 @@ pub fn remove_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<
         let torrent_url: String = conn.query_row("SELECT torrent_url FROM episodes WHERE id=?1", rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
         let download_dir = app.base_download_dir.to_string_lossy().to_string();
         let auto_delete = app.db.get_setting("auto_delete_torrent").unwrap_or("true".into()) == "true";
+        let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
         // Delete DB row while we have the lock
         conn.execute("DELETE FROM episodes WHERE id=?1", rusqlite::params![&id]).map_err(|e| e.to_string())?;
-        (gid, file_path, torrent_url, download_dir, auto_delete)
+        (gid, file_path, torrent_url, download_dir, auto_delete, port)
     };
     // ── everything below uses owned Strings, no borrows on state ──
+
+    // Tell aria2 to remove this download task first, so it releases file handles
+    if !gid.is_empty() && crate::aria2::Aria2Manager::port_is_open(port) {
+        let aria = crate::aria2::Aria2Manager::new(port);
+        let _ = aria.remove(&gid);
+        let _ = aria.remove_download_result(&gid);
+    }
 
     // File cleanup
     if !file_path.is_empty() {

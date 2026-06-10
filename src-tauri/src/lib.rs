@@ -52,10 +52,8 @@ impl AppState {
         };
 
         // Ensure download dir exists AND aria2 uses it
-        let base_download_dir = resolve_download_dir(&db, &app_dir);
+        let base_download_dir = resolve_download_dir(&db);
         std::fs::create_dir_all(&base_download_dir).ok();
-        // Also ensure the aria2 global dir setting matches
-        db.set_setting("download_dir", &base_download_dir.to_string_lossy()).ok();
 
         let port = db.get_setting("aria2_port")
             .ok()
@@ -75,13 +73,15 @@ impl AppState {
     }
 }
 
-fn resolve_download_dir(db: &db::Database, app_dir: &PathBuf) -> PathBuf {
+fn resolve_download_dir(db: &db::Database) -> PathBuf {
     let custom = db.get_setting("download_dir")
         .ok()
         .filter(|d| !d.is_empty());
     match custom {
         Some(d) => PathBuf::from(&d),
-        None => app_dir.join("download"),
+        None => std::env::current_dir()
+            .unwrap_or_default()
+            .join("download"),
     }
 }
 
