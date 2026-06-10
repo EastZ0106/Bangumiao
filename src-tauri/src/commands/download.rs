@@ -175,60 +175,76 @@ pub fn resume_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<
 pub fn remove_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
     eprintln!("[download] remove_download id={}", id);
     let (gid, file_path, torrent_url, download_dir, auto_delete, port) = {
+        eprintln!("[download] remove step1: locking AppState...");
         let app = state.lock().map_err(|e| e.to_string())?;
-        // Get setting BEFORE locking conn to avoid deadlock
+        eprintln!("[download] remove step2: reading settings...");
         let download_dir = app.base_download_dir.to_string_lossy().to_string();
+        eprintln!("[download] remove step2a: get_setting auto_delete_torrent...");
         let auto_delete = app.db.get_setting("auto_delete_torrent").unwrap_or("true".into()) == "true";
+        eprintln!("[download] remove step2b: locking aria2 for port...");
         let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
-
+        eprintln!("[download] remove step2c: locking conn...");
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
+        eprintln!("[download] remove step3: querying episode...");
         let gid: String = conn.query_row("SELECT gid FROM episodes WHERE id=?1", rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
+        eprintln!("[download] remove step3a: gid={}", gid);
         let file_path: String = conn.query_row("SELECT file_path FROM episodes WHERE id=?1", rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
+        eprintln!("[download] remove step3b: file_path exists");
         let torrent_url: String = conn.query_row("SELECT torrent_url FROM episodes WHERE id=?1", rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
+        eprintln!("[download] remove step3c: torrent_url exists");
+        eprintln!("[download] remove step4: deleting DB row...");
         conn.execute("DELETE FROM episodes WHERE id=?1", rusqlite::params![&id]).map_err(|e| e.to_string())?;
-        eprintln!("[download] remove DB row deleted, gid={} port={} file_path={}", gid, port, file_path);
+        eprintln!("[download] remove step5: DB row deleted, gid={} port={} file_path={}", gid, port, file_path);
         (gid, file_path, torrent_url, download_dir, auto_delete, port)
     };
+    eprintln!("[download] remove step6: locks released, spawning bg thread...");
 
     // Offload aria2 cleanup + file deletion to a background thread
     std::thread::spawn(move || {
         eprintln!("[download] remove bg-thread start");
         if !gid.is_empty() {
-            if crate::aria2::Aria2Manager::port_is_open(port) {
+            eprintln!("[download] remove bg stepA: checking port {}...", port);
+            let port_open = crate::aria2::Aria2Manager::port_is_open(port);
+            eprintln!("[download] remove bg stepA: port_open={}", port_open);
+            if port_open {
                 let aria = crate::aria2::Aria2Manager::new(port);
+                eprintln!("[download] remove bg stepB: calling forceRemove...");
                 match aria.force_remove(&gid) {
-                    Ok(_) => eprintln!("[download] remove bg aria2 forceRemove ok"),
-                    Err(e) => eprintln!("[download] remove bg aria2 forceRemove err: {}", e),
+                    Ok(_) => eprintln!("[download] remove bg stepB: forceRemove ok"),
+                    Err(e) => eprintln!("[download] remove bg stepB: forceRemove err: {}", e),
                 }
+                eprintln!("[download] remove bg stepC: calling removeDownloadResult...");
                 match aria.remove_download_result(&gid) {
-                    Ok(_) => eprintln!("[download] remove bg aria2 removeDownloadResult ok"),
-                    Err(e) => eprintln!("[download] remove bg aria2 removeDownloadResult err: {}", e),
+                    Ok(_) => eprintln!("[download] remove bg stepC: removeDownloadResult ok"),
+                    Err(e) => eprintln!("[download] remove bg stepC: removeDownloadResult err: {}", e),
                 }
             } else {
-                eprintln!("[download] remove bg aria2 port not open, skip RPC");
+                eprintln!("[download] remove bg stepA: aria2 port not open, skipping RPC");
             }
         }
-        eprintln!("[download] remove bg waiting 500ms for file handles...");
+        eprintln!("[download] remove bg stepD: sleeping 500ms...");
         std::thread::sleep(std::time::Duration::from_millis(500));
+        eprintln!("[download] remove bg stepD: awake");
         if !file_path.is_empty() {
+            eprintln!("[download] remove bg stepE: deleting file {}...", file_path);
             match std::fs::remove_file(&file_path) {
-                Ok(_) => eprintln!("[download] remove bg deleted {}", file_path),
-                Err(e) => eprintln!("[download] remove bg delete {} err: {}", file_path, e),
+                Ok(_) => eprintln!("[download] remove bg stepE: deleted ok"),
+                Err(e) => eprintln!("[download] remove bg stepE: delete err: {}", e),
             }
             let aria2_file = format!("{}.aria2", file_path);
+            eprintln!("[download] remove bg stepF: deleting .aria2 file...");
             let _ = std::fs::remove_file(&aria2_file);
         }
         if auto_delete && !torrent_url.is_empty() && torrent_url.ends_with(".torrent") {
-            match std::fs::remove_file(&torrent_url) {
-                Ok(_) => eprintln!("[download] remove bg deleted torrent {}", torrent_url),
-                Err(e) => eprintln!("[download] remove bg delete torrent {} err: {}", torrent_url, e),
-            }
+            eprintln!("[download] remove bg stepG: deleting torrent {}...", torrent_url);
+            let _ = std::fs::remove_file(&torrent_url);
         }
         if !download_dir.is_empty() && !gid.is_empty() {
+            eprintln!("[download] remove bg stepH: deleting orphan .torrent files...");
             let _ = std::fs::remove_file(&format!("{}/{}.torrent", download_dir, gid));
             let _ = std::fs::remove_file(&format!("{}/{}.torrent.aria2", download_dir, gid));
         }
-        eprintln!("[download] remove bg-thread done");
+        eprintln!("[download] remove bg-thread DONE");
     });
 
     eprintln!("[download] remove_download returning Ok");
