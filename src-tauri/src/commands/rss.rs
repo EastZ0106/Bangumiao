@@ -100,4 +100,76 @@ pub fn refresh_all_subscriptions(state: State<'_, Mutex<AppState>>) -> Result<Re
     for sub in subs {
         let (_sub_id, sub_title, rss_url) = (&sub.0, &sub.1, &sub.2);
 
-        // Ensure per-subs
+        // Ensure per-subscription sub-directory exists
+        let base_dir = app.base_download_dir.clone();
+        let safe_name = sanitize_dir_name(sub_title);
+        let sub_dir = base_dir.join(&safe_name);
+        std::fs::create_dir_all(&sub_dir).ok();
+
+        let xml = reqwest::blocking::get(rss_url)
+            .and_then(|r| r.text())
+            .map_err(|e| format!("Failed to fetch RSS: {}", e))?;
+
+        let feed = rss_parser::parse_rss(&xml).map_err(|e| format!("RSS parse error: {}", e))?;
+
+        let new_eps = rss_parser::extract_new_episodes(&feed, &known_titles);
+
+        for ep in new_eps {
+            total_new += 1;
+
+            // Scope: keep aria2 lock short so we don't deadlock with DB
+            let gid: Option<String> = {
+                let aria2 = app.aria2.lock().map_err(|e| e.to_string())?;
+                if !ep.torrent_url.is_empty() || !ep.magnet_uri.is_empty() {
+                    let result = if !ep.torrent_url.is_empty() {
+                        aria2.add_torrent_with_dir(&ep.torrent_url, &sub_dir.to_string_lossy())
+                    } else {
+                        aria2.add_uri_with_dir(&ep.magnet_uri, &sub_dir.to_string_lossy())
+                    };
+                    match result {
+                        Ok(g) => {
+                            if !g.is_empty() { total_started += 1; }
+                            Some(g)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                }
+            };
+
+            // Insert episode into DB
+            let _id = app
+                .db
+                .insert_episode(
+                    &sub.0,
+                    &ep.title,
+                    ep.episode_number,
+                    &ep.torrent_url,
+                    &ep.magnet_uri,
+                    &ep.pub_date,
+                    gid.as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
+
+            known_titles.insert(ep.title.clone());
+        }
+    }
+
+    Ok(RefreshResult { new_episodes: total_new, started_downloads: total_started })
+}
+
+fn sanitize_dir_name(name: &str) -> String {
+    let mut s = String::new();
+    for ch in name.chars() {
+        let c = ch as u32;
+        // Windows-illegal chars: \ / : * ? " < > |
+        match ch {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => s.push('_'),
+            _ if c < 0x20 => s.push('_'),
+            _ => s.push(ch),
+        }
+    }
+    let trimmed = s.trim().trim_matches('.');
+    if trimmed.is_empty() { "untitled".into() } else { trimmed.to_string() }
+}

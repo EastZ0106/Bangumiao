@@ -81,4 +81,43 @@ export default function Subscribe() {
         </div>
       </div>
 
-      {loading 
+      {loading ? (
+        <div className="empty-state">
+          <p>加载中...</p>
+        </div>
+      ) : subs.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-state-icon">📡</div>
+          <div className="empty-state-title">还没有订阅任何番剧</div>
+          <p>前往「蜜柑计划」浏览并添加订阅</p>
+        </div>
+      ) : (
+        <>
+          {refreshMsg && (
+            <div style={{
+              marginBottom: 12, padding: "8px 12px", borderRadius: 6, fontSize: 12,
+              background: refreshMsg.includes("失败") ? "#fee2e2" : "#dbeafe",
+              color: refreshMsg.includes("失败") ? "#991b1b" : "#1e40af",
+            }}>
+              {refreshMsg}
+            </div>
+          )}
+          <div className="card-grid">
+            {subs.map((sub) => (
+              <div className="card" key={sub.id}>
+                <h3 style={{ fontSize: 15, marginBottom: 8 }}>{sub.title}</h3>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  {sub.enabled ? (
+                    <span className="badge badge-success">启用</span>
+                  ) : (
+                    <span className="badge badge-warning">暂停</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

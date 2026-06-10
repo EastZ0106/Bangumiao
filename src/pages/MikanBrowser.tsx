@@ -323,4 +323,45 @@ export default function MikanBrowser() {
                       {ep.title}
                     </span>
                   </div>
-                  <span style={{ color: "var(--text-muted)", flexShrink: 0, marginL
+                  <span style={{ color: "var(--text-muted)", flexShrink: 0, marginLeft: 12 }}>
+                    {formatPubDate(ep.pub_date)}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Action buttons */}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  setShowEpisodeModal(false);
+                  setShowSubgroupModal(true);
+                }}
+                style={{ fontSize: 12, padding: "6px 14px" }}
+              >
+                返回字幕组列表
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleSubscribe}
+                disabled={subscribing}
+                style={{ fontSize: 12, padding: "6px 14px" }}
+              >
+                {subscribing ? "订阅中..." : `订阅 ${selectedSubgroup.subgroup_name}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div
+        ref={containerRef}
+        style={{
+          flex: 1, borderRadius: "var(--border-radius)", overflow: "hidden",
+          border: "1px solid var(--border-color)", background: "#1a1a2e",
+        }}
+      />
+    </div>
+  );
+}

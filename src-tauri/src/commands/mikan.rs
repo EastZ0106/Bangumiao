@@ -305,3 +305,26 @@ pub async fn fetch_mikan_rss(
 
     Ok(episodes)
 }
+
+/// Helper: unwrap multiple levels of JSON string encoding from eval_with_callback
+/// (kept for potential future use)
+#[allow(dead_code)]
+fn loop_unwrap_json<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, String> {
+    let mut candidate = raw.trim().to_string();
+    loop {
+        match serde_json::from_str::<T>(&candidate) {
+            Ok(v) => return Ok(v),
+            Err(_) => {
+                match serde_json::from_str::<String>(&candidate) {
+                    Ok(inner) => { candidate = inner; continue; }
+                    Err(e) => {
+                        return Err(format!(
+                            "JSON parse error: {} — raw: {}",
+                            e, &candidate[..candidate.len().min(300)]
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}

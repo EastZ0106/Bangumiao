@@ -154,4 +154,8 @@ export default function Settings() {
             onChange={(e) => setSettings({ ...settings, auto_delete_torrent: e.target.checked })}
             style={{ width: 18, height: 18, cursor: "pointer" }}
           />
-        </
+        </div>
+      </div>
+    </div>
+  );
+}

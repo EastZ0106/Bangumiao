@@ -1,6 +1,7 @@
 target/
 node_modules/
 dist/
+download/
 *.pdb
 *.log
 .DS_Store
