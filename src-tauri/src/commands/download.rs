@@ -305,12 +305,23 @@ pub fn clean_download_dir(state: State<'_, Mutex<AppState>>) -> Result<String, S
     let dir = std::path::Path::new(&download_dir);
     if !dir.exists() { return Ok(format!("Does not exist: {}", download_dir)); }
     let mut cleaned = Vec::new();
-    for entry in std::fs::read_dir(dir).map_err(|e| format!("Cannot read dir: {}", e))?.flatten() {
+    clean_dir_recursive(dir, &mut cleaned);
+    Ok(format!("Cleaned {} files: {}", cleaned.len(), cleaned.join(", ")))
+}
+
+fn clean_dir_recursive(dir: &std::path::Path, cleaned: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".torrent") || name.ends_with(".torrent.aria2") || name.ends_with(".aria2") {
-            let _ = std::fs::remove_file(entry.path());
-            cleaned.push(name);
+        if path.is_dir() {
+            clean_dir_recursive(&path, cleaned);
+        } else if name.ends_with(".torrent") || name.ends_with(".torrent.aria2") || name.ends_with(".aria2") {
+            let _ = std::fs::remove_file(&path);
+            cleaned.push(format!("{}/{}", dir.file_name().unwrap_or_default().to_string_lossy(), name));
         }
     }
-    Ok(format!("Cleaned {} files: {}", cleaned.len(), cleaned.join(", ")))
 }
