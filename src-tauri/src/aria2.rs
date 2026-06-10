@@ -272,11 +272,19 @@ impl Aria2Manager {
     }
 
     pub fn remove(&self, gid: &str) -> Result<String, String> {
-        let response = self.rpc_call("aria2.remove", &serde_json::json!([gid]))?;
+        let response = self.rpc_call("aria2.forceRemove", &serde_json::json!([gid]))?;
         response["result"]
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| "Failed to remove".to_string())
+    }
+
+    pub fn force_remove(&self, gid: &str) -> Result<String, String> {
+        let response = self.rpc_call("aria2.forceRemove", &serde_json::json!([gid]))?;
+        response["result"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Failed to force remove".to_string())
     }
 
     pub fn remove_download_result(&self, gid: &str) -> Result<String, String> {

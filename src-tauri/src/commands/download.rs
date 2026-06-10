@@ -147,7 +147,6 @@ pub fn resume_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<
 
 #[tauri::command]
 pub fn remove_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
-    // Gather data under lock
     let (gid, file_path, torrent_url, download_dir, auto_delete, port) = {
         let app = state.lock().map_err(|e| e.to_string())?;
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
@@ -157,31 +156,31 @@ pub fn remove_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<
         let download_dir = app.base_download_dir.to_string_lossy().to_string();
         let auto_delete = app.db.get_setting("auto_delete_torrent").unwrap_or("true".into()) == "true";
         let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
-        // Delete DB row while we have the lock
         conn.execute("DELETE FROM episodes WHERE id=?1", rusqlite::params![&id]).map_err(|e| e.to_string())?;
         (gid, file_path, torrent_url, download_dir, auto_delete, port)
     };
-    // ── everything below uses owned Strings, no borrows on state ──
 
-    // Tell aria2 to remove this download task first, so it releases file handles
-    if !gid.is_empty() && crate::aria2::Aria2Manager::port_is_open(port) {
-        let aria = crate::aria2::Aria2Manager::new(port);
-        let _ = aria.remove(&gid);
-        let _ = aria.remove_download_result(&gid);
-    }
-
-    // File cleanup
-    if !file_path.is_empty() {
-        let _ = std::fs::remove_file(&file_path);
-        let _ = std::fs::remove_file(&format!("{}.aria2", file_path));
-    }
-    if auto_delete && !torrent_url.is_empty() && torrent_url.ends_with(".torrent") {
-        let _ = std::fs::remove_file(&torrent_url);
-    }
-    if !download_dir.is_empty() && !gid.is_empty() {
-        let _ = std::fs::remove_file(&format!("{}/{}.torrent", download_dir, gid));
-        let _ = std::fs::remove_file(&format!("{}/{}.torrent.aria2", download_dir, gid));
-    }
+    // Offload aria2 cleanup + file deletion to a background thread
+    // to avoid blocking the UI on slow RPC calls or stuck file handles.
+    std::thread::spawn(move || {
+        if !gid.is_empty() && crate::aria2::Aria2Manager::port_is_open(port) {
+            let aria = crate::aria2::Aria2Manager::new(port);
+            let _ = aria.force_remove(&gid);
+            let _ = aria.remove_download_result(&gid);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if !file_path.is_empty() {
+            let _ = std::fs::remove_file(&file_path);
+            let _ = std::fs::remove_file(&format!("{}.aria2", file_path));
+        }
+        if auto_delete && !torrent_url.is_empty() && torrent_url.ends_with(".torrent") {
+            let _ = std::fs::remove_file(&torrent_url);
+        }
+        if !download_dir.is_empty() && !gid.is_empty() {
+            let _ = std::fs::remove_file(&format!("{}/{}.torrent", download_dir, gid));
+            let _ = std::fs::remove_file(&format!("{}/{}.torrent.aria2", download_dir, gid));
+        }
+    });
 
     Ok(())
 }
