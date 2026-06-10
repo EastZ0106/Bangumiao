@@ -11,7 +11,6 @@ pub async fn open_mikan_browser(
     width: f64,
     height: f64,
 ) -> Result<String, String> {
-    // Close existing one if present
     if let Some(existing) = window.get_webview("mikan-browser") {
         let _ = existing.close();
     }
@@ -48,7 +47,6 @@ pub async fn open_mikan_browser(
         tauri::LogicalSize::new(width, height),
     ).map_err(|e| format!("Failed to create child webview: {}", e))?;
 
-    // Explicitly set focus after adding
     if let Some(webview) = window.get_webview("mikan-browser") {
         webview.set_focus().ok();
     }
@@ -56,7 +54,6 @@ pub async fn open_mikan_browser(
     Ok("mikan-browser".into())
 }
 
-/// Close the mikan child WebView (called when user leaves /browse)
 #[tauri::command]
 pub async fn close_mikan_browser(window: tauri::Window) -> Result<(), String> {
     if let Some(webview) = window.get_webview("mikan-browser") {
@@ -65,7 +62,6 @@ pub async fn close_mikan_browser(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
-/// Resize/reposition the child WebView (called on window resize)
 #[tauri::command]
 pub async fn update_mikan_browser_bounds(
     window: tauri::Window,
@@ -83,16 +79,15 @@ pub async fn update_mikan_browser_bounds(
     Ok(())
 }
 
-/// Execute JS in the mikan WebView
 #[tauri::command]
 pub async fn mikan_eval(window: tauri::Window, js: String) -> Result<(), String> {
     if let Some(webview) = window.get_webview("mikan-browser") {
-        webview.eval(&js).map_err(|e| e.to_string())?;
+        webview.eval(&*js).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-/// Scan the current mikanani page for RSS subscription links and return structured data
+/// One item returned by the RSS scanner
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct RssCandidate {
     pub anime_title: String,
@@ -102,212 +97,179 @@ pub struct RssCandidate {
     pub subgroup_id: String,
 }
 
+/// Scan current mikanani page for all RSS subscription links
 #[tauri::command]
 pub async fn scan_mikan_rss(window: tauri::Window) -> Result<Vec<RssCandidate>, String> {
-    // This JS scans all <a> tags with /RSS/Bangumi in href,
-    // extracts bangumiId/subgroupid params, and walks up the DOM to find the anime title
-    let js = r#"
+    // Step 1: inject scan JS; it stores result in window.__mikanRssResult
+    let inject = r#"
 (function() {
-    function findAnimeTitle(el) {
-        // Walk up through common container elements to find the anime card/section
-        var current = el;
-        for (var i = 0; i < 10; i++) {
-            if (!current || current === document.body) break;
-            // Mikan list page: the anime title is often in a nearby heading or link
-            // Look for elements with common title-related classes or <a class="title">
-            var titleEl = current.querySelector('a.anime-title, a[class*="title"], h3, h2, .bangumi-title');
-            if (titleEl) return titleEl.textContent.trim();
-            // Also check siblings / parent siblings
-            if (current.previousElementSibling) {
-                var prevTitle = current.previousElementSibling.querySelector('a.anime-title, a[class*="title"], h3, h2');
-                if (prevTitle) return prevTitle.textContent.trim();
-                var prevText = current.previousElementSibling.textContent.trim();
-                if (prevText.length > 0 && prevText.length < 100) return prevText;
-            }
-            current = current.parentElement;
+function findAnimeTitle(el) {
+    var cur = el;
+    for (var i = 0; i < 10; i++) {
+        if (!cur || cur === document.body) break;
+        var t = cur.querySelector('a.anime-title, a[class*="title"], h3, h2, .bangumi-title');
+        if (t) return t.textContent.trim();
+        if (cur.previousElementSibling) {
+            var pt = cur.previousElementSibling.querySelector('a.anime-title');
+            if (pt) return pt.textContent.trim();
+            var ptx = cur.previousElementSibling.textContent.trim();
+            if (ptx.length > 0 && ptx.length < 100) return ptx;
         }
-        // Fallback: use the page's main heading or document title
-        var pageTitle = document.querySelector('h1, .page-title, .bangumi-page-title');
-        if (pageTitle) return pageTitle.textContent.trim();
-        return 'Unknown Anime';
+        cur = cur.parentElement;
     }
+    var h1 = document.querySelector('h1, .page-title, .bangumi-page-title');
+    if (h1) return h1.textContent.trim();
+    return 'Unknown Anime';
+}
 
-    var results = [];
-    var seen = {};
-    var links = document.querySelectorAll('a[href*="/RSS/Bangumi"]');
-    links.forEach(function(a) {
-        var href = a.getAttribute('href');
-        var bangumiMatch = href.match(/bangumiId=(\d+)/);
-        var subgroupMatch = href.match(/subgroupid=(\d+)/);
-        if (!bangumiMatch || !subgroupMatch) return;
+var results = [];
+var seen = {};
 
-        var bangumiId = bangumiMatch[1];
-        var subgroupId = subgroupMatch[1];
-        var key = bangumiId + ':' + subgroupId;
-
-        if (seen[key]) return;
-        seen[key] = true;
-
-        // Subtitle group name is usually the text content of the RSS <a> tag
-        // or the title attribute of the enclosing element
-        var subgroupName = (a.textContent || '').trim();
-        if (!subgroupName || subgroupName.length < 2) {
-            subgroupName = a.getAttribute('title') || '';
-        }
-        if (!subgroupName || subgroupName.length < 2) {
-            // Try the parent row has the subgroup name
-            var row = a.closest('tr, li, .subgroup-row, [class*="subgroup"]');
-            if (row) subgroupName = (row.textContent || '').trim().substring(0, 50);
-        }
-        if (!subgroupName || subgroupName.length < 2) {
-            subgroupName = 'Subgroup ' + subgroupId;
-        }
-
-        var animeTitle = findAnimeTitle(a);
-
-        var fullUrl = href.startsWith('http') ? href : ('https://mikanani.me' + href);
-
-        results.push({
-            animeTitle: animeTitle,
-            subgroupName: subgroupName,
-            rssUrl: fullUrl,
-            bangumiId: bangumiId,
-            subgroupId: subgroupId
-        });
+// Strategy 1: scan for RSS icon images and grab the parent <a> href
+var rssIcons = document.querySelectorAll('img[src*="rss"], img[src*="RSS"], img[alt*="rss"], img[alt*="RSS"], i.rss, .rss-icon, [class*="rss"]');
+rssIcons.forEach(function(icon) {
+    var a = icon.closest('a');
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (!href) return;
+    var bm = href.match(/bangumiId=(\d+)/);
+    var sg = href.match(/subgroupid=(\d+)/);
+    if (!bm || !sg) {
+        if (href.indexOf('/RSS/') === -1) return;
+    }
+    var key = (bm&&sg) ? (bm[1]+':'+sg[1]) : href;
+    if (seen[key]) return;
+    seen[key] = true;
+    var fullUrl = href.startsWith('http') ? href : ('https://mikanani.me'+href);
+    results.push({
+        animeTitle: findAnimeTitle(a),
+        subgroupName: ((a.textContent||'').trim() || (icon.getAttribute('alt')||'') || 'RSS'),
+        rssUrl: fullUrl,
+        bangumiId: bm ? bm[1] : '',
+        subgroupId: sg ? sg[1] : ''
     });
+});
 
-    // If no per-episode RSS links found, also check for the MyBangumi token link
-    if (results.length === 0) {
-        var tokenLinks = document.querySelectorAll('a[href*="/RSS/MyBangumi"]');
-        tokenLinks.forEach(function(a) {
-            var href = a.getAttribute('href');
-            var fullUrl = href.startsWith('http') ? href : ('https://mikanani.me' + href);
-            results.push({
-                animeTitle: 'MyBangumi (个人聚合)',
-                subgroupName: 'All',
-                rssUrl: fullUrl,
-                bangumiId: '',
-                subgroupId: ''
-            });
-        });
+// Strategy 2: scan all <a> tags with /RSS/ in href (the original approach)
+var rssLinks = document.querySelectorAll('a[href*="/RSS/"]');
+rssLinks.forEach(function(a) {
+    var href = a.getAttribute('href');
+    var fullUrl = href.startsWith('http') ? href : ('https://mikanani.me'+href);
+    if (seen[fullUrl]) return;
+    seen[fullUrl] = true;
+
+    var bm = href.match(/bangumiId=(\d+)/);
+    var sg = href.match(/subgroupid=(\d+)/);
+
+    var sgName = (a.textContent||'').trim() || a.getAttribute('title') || '';
+    if (!sgName || sgName.length < 2) {
+        var row = a.closest('tr, li, [class*=subgroup]');
+        if (row) sgName = (row.textContent||'').trim().substring(0,50);
     }
+    if (!sgName || sgName.length < 2) sgName = sg ? ('Subgroup '+sg[1]) : 'RSS Feed';
 
-    return JSON.stringify(results);
+    results.push({
+        animeTitle: findAnimeTitle(a),
+        subgroupName: sgName.trim().replace(/\n/g, ' ').replace(/已订阅/g, '').replace(/\s+/g, ' ').trim().substring(0, 30),
+        rssUrl: fullUrl,
+        bangumiId: bm ? bm[1] : '',
+        subgroupId: sg ? sg[1] : ''
+    });
+});
+
+// Strategy 3: DEBUG — dump ALL links on the page for diagnosis
+var debugAllRss = [];
+var allLinks = document.querySelectorAll('a');
+allLinks.forEach(function(a) {
+    var h = a.getAttribute('href') || '';
+    if (h.indexOf('RSS') !== -1 || h.indexOf('rss') !== -1 || h.indexOf('Bangumi') !== -1 || h.indexOf('bangumi') !== -1) {
+        debugAllRss.push({href: h, text: (a.textContent||'').trim().substring(0, 60), outerHTML: a.outerHTML.substring(0, 200)});
+    }
+});
+
+// Also dump the page title and URL for context
+var pageInfo = {
+    title: document.title,
+    url: window.location.href,
+    allRssLinks: debugAllRss,
+    totalLinksOnPage: allLinks.length,
+    rssIconCount: rssIcons.length
+};
+
+window.__mikanRssResult = JSON.stringify(results);
+window.__mikanPageInfo = JSON.stringify(pageInfo);
 })();
 "#;
 
-    // Use eval_with_callback to get the return value from the JS scan
-    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(webview) = window.get_webview("mikan-browser") {
+        webview.eval(inject).map_err(|e| format!("eval error: {}", e))?;
+    } else {
+        return Ok(vec![]);
+    }
 
+    // Step 2: read back page info for diagnostics
+    let (tx, rx) = std::sync::mpsc::channel();
     if let Some(webview) = window.get_webview("mikan-browser") {
         webview.eval_with_callback(
-            &format!("({})()", js),
-            move |result| {
-                let _ = tx.send(result);
-            },
+            "JSON.stringify({result: window.__mikanRssResult, pageInfo: window.__mikanPageInfo})",
+            move |r| { let _ = tx.send(r); },
         ).map_err(|e| format!("eval_with_callback error: {}", e))?;
     } else {
         return Ok(vec![]);
     }
 
-    // Wait up to 3 seconds for the JS to return
-    let raw = rx.recv_timeout(std::time::Duration::from_secs(3))
+    let raw = rx.recv_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| format!("Timeout waiting for RSS scan: {}", e))?;
 
-    // eval() returns the JS result as a String; parse it as JSON
-    if raw.is_empty() || raw == "null" {
+    if raw.is_empty() || raw == "null" || raw == "undefined" {
         return Ok(vec![]);
     }
 
-    serde_json::from_str(&raw).map_err(|e| format!("JSON parse error: {} — raw: {}", e, &raw[..raw.len().min(200)]))
+    // Parse the combined diagnostic + result JSON
+    #[derive(serde::Deserialize)]
+    struct ScanResult {
+        result: String,
+        page_info: serde_json::Value,
+    }
+
+    let combined: ScanResult = loop_unwrap_json(&raw)?;
+
+    // Parse the actual RSS results from the inner JSON string
+    let parsed: Vec<RssCandidate> = loop_unwrap_json(&combined.result)?;
+
+    // If no results, include page diagnostics in the error message
+    if parsed.is_empty() {
+        let title = combined.page_info.get("title").and_then(|v| v.as_str()).unwrap_or("?");
+        let url = combined.page_info.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+        let total_links = combined.page_info.get("totalLinksOnPage").and_then(|v| v.as_u64()).unwrap_or(0);
+        let rss_links = &combined.page_info["allRssLinks"];
+        return Err(format!(
+            "未发现 RSS 链接。\n页面: {}\nURL: {}\n总链接数: {}\n包含 RSS/Bangumi 的链接: {}",
+            title, url, total_links,
+            serde_json::to_string_pretty(rss_links).unwrap_or_default()
+        ));
+    }
+
+    Ok(parsed)
 }
 
-#[cfg(test)]
-mod mikan_tests {
-
-    #[test]
-    fn test_scan_mikan_rss() {
-        let js = r#"
-(function() {
-    function findAnimeTitle(el) {
-        var current = el;
-        for (var i = 0; i < 10; i++) {
-            if (!current || current === document.body) break;
-            var titleEl = current.querySelector('a.anime-title, a[class*="title"], h3, h2, .bangumi-title');
-            if (titleEl) return titleEl.textContent.trim();
-            if (current.previousElementSibling) {
-                var prevTitle = current.previousElementSibling.querySelector('a.anime-title, a[class*="title"], h3, h2');
-                if (prevTitle) return prevTitle.textContent.trim();
-                var prevText = current.previousElementSibling.textContent.trim();
-                if (prevText.length > 0 && prevText.length < 100) return prevText;
+/// Helper: unwrap multiple levels of JSON string encoding from eval_with_callback
+fn loop_unwrap_json<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, String> {
+    let mut candidate = raw.trim().to_string();
+    loop {
+        match serde_json::from_str::<T>(&candidate) {
+            Ok(v) => return Ok(v),
+            Err(_) => {
+                match serde_json::from_str::<String>(&candidate) {
+                    Ok(inner) => { candidate = inner; continue; }
+                    Err(e) => {
+                        return Err(format!(
+                            "JSON parse error: {} — raw: {}",
+                            e, &candidate[..candidate.len().min(300)]
+                        ));
+                    }
+                }
             }
-            current = current.parentElement;
         }
-        var pageTitle = document.querySelector('h1, .page-title, .bangumi-page-title');
-        if (pageTitle) return pageTitle.textContent.trim();
-        return 'Unknown Anime';
-    }
-
-    var results = [];
-    var seen = {};
-    var links = document.querySelectorAll('a[href*="/RSS/Bangumi"]');
-    links.forEach(function(a) {
-        var href = a.getAttribute('href');
-        var bangumiMatch = href.match(/bangumiId=(\d+)/);
-        var subgroupMatch = href.match(/subgroupid=(\d+)/);
-        if (!bangumiMatch || !subgroupMatch) return;
-
-        var bangumiId = bangumiMatch[1];
-        var subgroupId = subgroupMatch[1];
-        var key = bangumiId + ':' + subgroupId;
-
-        if (seen[key]) return;
-        seen[key] = true;
-
-        var subgroupName = (a.textContent || '').trim();
-        if (!subgroupName || subgroupName.length < 2) {
-            subgroupName = a.getAttribute('title') || '';
-        }
-        if (!subgroupName || subgroupName.length < 2) {
-            var row = a.closest('tr, li, .subgroup-row, [class*="subgroup"]');
-            if (row) subgroupName = (row.textContent || '').trim().substring(0, 50);
-        }
-        if (!subgroupName || subgroupName.length < 2) {
-            subgroupName = 'Subgroup ' + subgroupId;
-        }
-
-        var animeTitle = findAnimeTitle(a);
-
-        var fullUrl = href.startsWith('http') ? href : ('https://mikanani.me' + href);
-
-        results.push({
-            animeTitle: animeTitle,
-            subgroupName: subgroupName,
-            rssUrl: fullUrl,
-            bangumiId: bangumiId,
-            subgroupId: subgroupId
-        });
-    });
-
-    if (results.length === 0) {
-        var tokenLinks = document.querySelectorAll('a[href*="/RSS/MyBangumi"]');
-        tokenLinks.forEach(function(a) {
-            var href = a.getAttribute('href');
-            var fullUrl = href.startsWith('http') ? href : ('https://mikanani.me' + href);
-            results.push({
-                animeTitle: 'MyBangumi (个人聚合)',
-                subgroupName: 'All',
-                rssUrl: fullUrl,
-                bangumiId: '',
-                subgroupId: ''
-            });
-        });
-    }
-
-    return JSON.stringify(results);
-})();
-        "#;
-        // Verify JS constructable — structural check only
-        assert!(!js.is_empty());
     }
 }
