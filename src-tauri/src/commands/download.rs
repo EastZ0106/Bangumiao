@@ -44,35 +44,14 @@ pub fn get_downloads(state: State<'_, Mutex<AppState>>) -> Result<Vec<DownloadIt
 #[tauri::command]
 pub fn sync_downloads(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
     let mut log = String::new();
-    let aria2_port: u16 = {
-        let app = state.lock().map_err(|e| e.to_string())?;
-        let aria2 = app.aria2.lock().map_err(|e| e.to_string())?;
-        aria2.port()
-    };
 
-    if !Aria2Manager::port_is_open(aria2_port) {
+    if !Aria2Manager::port_is_open(6800) {
         return Ok("aria2 not reachable".into());
     }
 
-    let tmp_aria2 = Aria2Manager::new(aria2_port);
+    let tmp_aria2 = Aria2Manager::new(6800);
     let active_result = tmp_aria2.tell_active();
-    let stopped_result = tmp_aria2.tell_stopped(0, 50);
-
-    // If aria2 has no tasks, sync pending episodes
-    if active_result.as_ref().map(|v| v.is_empty()).unwrap_or(true)
-        && stopped_result.as_ref().map(|v| v.is_empty()).unwrap_or(true) {
-        let app = state.lock().map_err(|e| e.to_string())?;
-        let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
-        let pending: i32 = conn.query_row(
-            "SELECT COUNT(*) FROM episodes WHERE gid != '' AND status = 'pending'",
-            [], |r| r.get(0)
-        ).unwrap_or(0);
-        if pending > 0 {
-            log.push_str(&format!("{} pending episodes marked active\n", pending));
-            conn.execute("UPDATE episodes SET status='active' WHERE gid != '' AND status='pending'", []).ok();
-        }
-        return Ok(log);
-    }
+    let stopped_result = tmp_aria2.tell_stopped(0, 100);
 
     let app = state.lock().map_err(|e| e.to_string())?;
     let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
@@ -84,6 +63,7 @@ pub fn sync_downloads(state: State<'_, Mutex<AppState>>) -> Result<String, Strin
             let total = d.total_length.parse::<u64>().unwrap_or(1) as f64;
             let progress = if total > 0.0 { completed / total } else { 0.0 };
             let file_path = d.files.first().map(|f| f.path.clone()).unwrap_or_default();
+            eprintln!("[sync] active gid={} status={} progress={:.3}", d.gid, d.status, progress);
             conn.execute(
                 "UPDATE episodes SET status='active', progress=?1, file_path=?2 WHERE gid=?3",
                 rusqlite::params![progress, file_path, d.gid],
@@ -96,8 +76,31 @@ pub fn sync_downloads(state: State<'_, Mutex<AppState>>) -> Result<String, Strin
         for d in stopped {
             let file_path = d.files.first().map(|f| f.path.clone()).unwrap_or_default();
             if file_path.contains("[METADATA]") { continue; }
-            let status = if d.status == "complete" { "completed" } else { "failed" };
-            conn.execute("UPDATE episodes SET status=?1, file_path=?2 WHERE gid=?3", rusqlite::params![status, file_path, d.gid]).ok();
+
+            // Map aria2 status → DB status.
+            // "complete" → completed, "paused" → paused (user paused, do NOT overwrite),
+            // "error" / "removed" → failed, everything else → leave alone.
+            let new_status = match d.status.as_str() {
+                "complete" => "completed",
+                "paused" => "paused",
+                "error" => "failed",
+                "removed" => "failed",
+                _ => "", // unknown — skip update
+            };
+
+            eprintln!(
+                "[sync] stopped gid={} aria2_status={} new_status={}",
+                d.gid, d.status, new_status
+            );
+
+            if !new_status.is_empty() {
+                conn.execute(
+                    "UPDATE episodes SET status=?1, file_path=?2 WHERE gid=?3",
+                    rusqlite::params![new_status, file_path, d.gid],
+                ).ok();
+            }
+
+            // Clean up orphaned .torrent / .torrent.aria2 files
             let download_dir: String = app.base_download_dir.to_string_lossy().to_string();
             if !download_dir.is_empty() {
                 let _ = std::fs::remove_file(&format!("{}/{}.torrent", download_dir, d.gid));
@@ -111,6 +114,7 @@ pub fn sync_downloads(state: State<'_, Mutex<AppState>>) -> Result<String, Strin
 
 #[tauri::command]
 pub fn pause_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
+    eprintln!("[download] pause_download id={}", id);
     let (gid, port) = {
         let app = state.lock().map_err(|e| e.to_string())?;
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
@@ -119,16 +123,24 @@ pub fn pause_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<(
         (gid, port)
     };
     if !gid.is_empty() && Aria2Manager::port_is_open(port) {
-        let _ = Aria2Manager::new(port).pause(&gid);
+        match Aria2Manager::new(port).pause(&gid) {
+            Ok(_) => eprintln!("[download] pause aria2 ok, updating DB"),
+            Err(e) => eprintln!("[download] pause aria2 failed: {}", e),
+        }
+    } else {
+        eprintln!("[download] pause skip aria2: gid_empty={} port_open={}", gid.is_empty(), Aria2Manager::port_is_open(port));
     }
+    // Always update DB — it's the source of truth for the UI
     let app = state.lock().map_err(|e| e.to_string())?;
     let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
     conn.execute("UPDATE episodes SET status='paused' WHERE id=?1", rusqlite::params![&id]).map_err(|e| e.to_string())?;
+    eprintln!("[download] pause_download done");
     Ok(())
 }
 
 #[tauri::command]
 pub fn resume_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
+    eprintln!("[download] resume_download id={}", id);
     let (gid, port) = {
         let app = state.lock().map_err(|e| e.to_string())?;
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
@@ -137,16 +149,21 @@ pub fn resume_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<
         (gid, port)
     };
     if !gid.is_empty() && Aria2Manager::port_is_open(port) {
-        let _ = Aria2Manager::new(port).unpause(&gid);
+        match Aria2Manager::new(port).unpause(&gid) {
+            Ok(_) => eprintln!("[download] unpause aria2 ok"),
+            Err(e) => eprintln!("[download] unpause aria2 failed: {}", e),
+        }
     }
     let app = state.lock().map_err(|e| e.to_string())?;
     let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
-    conn.execute("UPDATE episodes SET status='downloading' WHERE id=?1", rusqlite::params![&id]).map_err(|e| e.to_string())?;
+    conn.execute("UPDATE episodes SET status='active' WHERE id=?1", rusqlite::params![&id]).map_err(|e| e.to_string())?;
+    eprintln!("[download] resume_download done");
     Ok(())
 }
 
 #[tauri::command]
 pub fn remove_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<(), String> {
+    eprintln!("[download] remove_download id={}", id);
     let (gid, file_path, torrent_url, download_dir, auto_delete, port) = {
         let app = state.lock().map_err(|e| e.to_string())?;
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
@@ -157,31 +174,52 @@ pub fn remove_download(state: State<'_, Mutex<AppState>>, id: String) -> Result<
         let auto_delete = app.db.get_setting("auto_delete_torrent").unwrap_or("true".into()) == "true";
         let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
         conn.execute("DELETE FROM episodes WHERE id=?1", rusqlite::params![&id]).map_err(|e| e.to_string())?;
+        eprintln!("[download] remove DB row deleted, gid={} port={} file_path={}", gid, port, file_path);
         (gid, file_path, torrent_url, download_dir, auto_delete, port)
     };
 
     // Offload aria2 cleanup + file deletion to a background thread
-    // to avoid blocking the UI on slow RPC calls or stuck file handles.
     std::thread::spawn(move || {
-        if !gid.is_empty() && crate::aria2::Aria2Manager::port_is_open(port) {
-            let aria = crate::aria2::Aria2Manager::new(port);
-            let _ = aria.force_remove(&gid);
-            let _ = aria.remove_download_result(&gid);
+        eprintln!("[download] remove bg-thread start");
+        if !gid.is_empty() {
+            if crate::aria2::Aria2Manager::port_is_open(port) {
+                let aria = crate::aria2::Aria2Manager::new(port);
+                match aria.force_remove(&gid) {
+                    Ok(_) => eprintln!("[download] remove bg aria2 forceRemove ok"),
+                    Err(e) => eprintln!("[download] remove bg aria2 forceRemove err: {}", e),
+                }
+                match aria.remove_download_result(&gid) {
+                    Ok(_) => eprintln!("[download] remove bg aria2 removeDownloadResult ok"),
+                    Err(e) => eprintln!("[download] remove bg aria2 removeDownloadResult err: {}", e),
+                }
+            } else {
+                eprintln!("[download] remove bg aria2 port not open, skip RPC");
+            }
         }
+        eprintln!("[download] remove bg waiting 500ms for file handles...");
         std::thread::sleep(std::time::Duration::from_millis(500));
         if !file_path.is_empty() {
-            let _ = std::fs::remove_file(&file_path);
-            let _ = std::fs::remove_file(&format!("{}.aria2", file_path));
+            match std::fs::remove_file(&file_path) {
+                Ok(_) => eprintln!("[download] remove bg deleted {}", file_path),
+                Err(e) => eprintln!("[download] remove bg delete {} err: {}", file_path, e),
+            }
+            let aria2_file = format!("{}.aria2", file_path);
+            let _ = std::fs::remove_file(&aria2_file);
         }
         if auto_delete && !torrent_url.is_empty() && torrent_url.ends_with(".torrent") {
-            let _ = std::fs::remove_file(&torrent_url);
+            match std::fs::remove_file(&torrent_url) {
+                Ok(_) => eprintln!("[download] remove bg deleted torrent {}", torrent_url),
+                Err(e) => eprintln!("[download] remove bg delete torrent {} err: {}", torrent_url, e),
+            }
         }
         if !download_dir.is_empty() && !gid.is_empty() {
             let _ = std::fs::remove_file(&format!("{}/{}.torrent", download_dir, gid));
             let _ = std::fs::remove_file(&format!("{}/{}.torrent.aria2", download_dir, gid));
         }
+        eprintln!("[download] remove bg-thread done");
     });
 
+    eprintln!("[download] remove_download returning Ok");
     Ok(())
 }
 
