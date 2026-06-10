@@ -71,7 +71,7 @@ pub fn extract_new_episodes(
                 torrent_url,
                 magnet_uri,
                 pub_date: item.pub_date.clone(),
-                episode_number: parse_episode_number(&item.title),
+                episode_number: extract_episode_number(&item.title),
             }
         })
         .collect()
@@ -86,7 +86,7 @@ fn extract_magnet(link: &str) -> String {
     }
 }
 
-fn parse_episode_number(title: &str) -> Option<f64> {
+pub fn extract_episode_number(title: &str) -> Option<f64> {
     // Patterns like: 第01话, 第1話, ep01, EP01, #01, - 01, etc.
     let patterns = [
         regex_lite::Regex::new(r"第\s*(\d+(?:\.\d+)?)\s*[话話]"),

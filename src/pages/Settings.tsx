@@ -64,7 +64,7 @@ export default function Settings() {
             className="setting-input"
             value={settings.download_dir}
             onChange={(e) => setSettings({ ...settings, download_dir: e.target.value })}
-            placeholder="默认为文档目录下的 bangumiao/downloads"
+            placeholder="默认为 bangumiao/download。RSS 订阅子文件夹、手动下载→手动下载"
             style={{
               width: "100%",
               padding: "8px 12px",
@@ -154,8 +154,4 @@ export default function Settings() {
             onChange={(e) => setSettings({ ...settings, auto_delete_torrent: e.target.checked })}
             style={{ width: 18, height: 18, cursor: "pointer" }}
           />
-        </div>
-      </div>
-    </div>
-  );
-}
+        </

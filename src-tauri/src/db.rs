@@ -68,6 +68,7 @@ impl Database {
             INSERT OR IGNORE INTO settings (key, value) VALUES ('aria2_port', '6800');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('max_concurrent_downloads', '3');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('download_dir', '');
+            INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_delete_torrent', 'true');
             "
         )?;
 

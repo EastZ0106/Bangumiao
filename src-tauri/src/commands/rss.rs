@@ -16,6 +16,32 @@ pub struct Subscription {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct RefreshResult {
+    pub new_episodes: u32,
+    pub started_downloads: u32,
+}
+
+/// Wipe all subscriptions and episodes from the database.
+/// Keeps settings and watch_records intact.
+/// Also re-creates the database file fresh to eliminate any WAL/corruption issues.
+#[tauri::command]
+pub fn wipe_all_data(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let app = state.lock().map_err(|e| e.to_string())?;
+    // Take a strong lock and delete everything
+    {
+        let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
+        let ep_count: i32 = conn.query_row("SELECT COUNT(*) FROM episodes", [], |r| r.get(0)).unwrap_or(0);
+        let sub_count: i32 = conn.query_row("SELECT COUNT(*) FROM subscriptions WHERE id != 'manual'", [], |r| r.get(0)).unwrap_or(0);
+        conn.execute("DELETE FROM episodes", []).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM subscriptions WHERE id != 'manual'", []).map_err(|e| e.to_string())?;
+        // Run VACUUM to rebuild the database file cleanly
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", []).ok();
+        conn.execute("VACUUM", []).ok();
+        Ok(format!("Cleared {} episodes and {} subscriptions", ep_count, sub_count))
+    }
+}
+
 #[tauri::command]
 pub fn get_subscriptions(state: State<'_, Mutex<AppState>>) -> Result<Vec<Subscription>, String> {
     let app = state.lock().map_err(|e| e.to_string())?;
@@ -59,57 +85,19 @@ pub fn toggle_subscription(state: State<'_, Mutex<AppState>>, id: String) -> Res
 }
 
 #[tauri::command]
-pub fn refresh_all_subscriptions(state: State<'_, Mutex<AppState>>) -> Result<Vec<String>, String> {
+pub fn refresh_all_subscriptions(state: State<'_, Mutex<AppState>>) -> Result<RefreshResult, String> {
     let app = state.lock().map_err(|e| e.to_string())?;
-    let subs = app.db.get_enabled_subscriptions().map_err(|e| e.to_string())?;
-    let known_titles = app.db.get_all_episode_titles().map_err(|e| e.to_string())?;
+    let subs: Vec<_> = app.db.get_enabled_subscriptions()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|(id, _, rss_url)| *id != "manual" && !rss_url.starts_with("manual://"))
+        .collect();
+    let mut known_titles = app.db.get_all_episode_titles().map_err(|e| e.to_string())?;
 
-    let mut new_ids = Vec::new();
+    let mut total_new = 0u32;
+    let mut total_started = 0u32;
 
     for sub in subs {
-        let xml = reqwest::blocking::get(&sub.2)
-            .and_then(|r| r.text())
-            .map_err(|e| format!("Failed to fetch RSS: {}", e))?;
+        let (_sub_id, sub_title, rss_url) = (&sub.0, &sub.1, &sub.2);
 
-        let feed = rss_parser::parse_rss(&xml).map_err(|e| format!("RSS parse error: {}", e))?;
-
-        let new_eps = rss_parser::extract_new_episodes(&feed, &known_titles);
-
-        for ep in new_eps {
-            let gid: Option<String> = if !ep.magnet_uri.is_empty() || !ep.torrent_url.is_empty() {
-                let aria2 = app.aria2.lock().map_err(|e| e.to_string())?;
-                let result = if !ep.torrent_url.is_empty() {
-                    aria2.add_torrent(&ep.torrent_url)
-                } else {
-                    aria2.add_uri(&ep.magnet_uri)
-                };
-                match result {
-                    Ok(g) => {
-                        // Update aria2 gid immediately
-                        let _conn = app.db.conn.lock().map_err(|e| e.to_string())?;
-                        Some(g)
-                    }
-                    Err(_) => None,
-                }
-            } else {
-                None
-            };
-
-            let id = app
-                .db
-                .insert_episode(
-                    &sub.0,
-                    &ep.title,
-                    ep.episode_number,
-                    &ep.torrent_url,
-                    &ep.magnet_uri,
-                    &ep.pub_date,
-                    gid.as_deref(),
-                )
-                .map_err(|e| e.to_string())?;
-            new_ids.push(id);
-        }
-    }
-
-    Ok(new_ids)
-}
+        // Ensure per-subs

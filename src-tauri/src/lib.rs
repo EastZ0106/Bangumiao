@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 pub struct AppState {
+    pub base_download_dir: PathBuf,
     pub db: db::Database,
     pub app_dir: PathBuf,
     pub aria2: Mutex<aria2::Aria2Manager>,
@@ -26,6 +27,12 @@ impl AppState {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("bangumiao");
         let db = db::Database::new(&app_dir)?;
+
+        // On startup, run a checkpoint + vacuum to clean any stale WAL state
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;").ok();
+        }
 
         // Resolve aria2c sidecar path
         // In dev mode, look relative to src-tauri/binaries/
@@ -44,17 +51,11 @@ impl AppState {
             }
         };
 
-        // Ensure download dir exists
-        let download_dir = db.get_setting("download_dir")
-            .ok()
-            .filter(|d| !d.is_empty())
-            .unwrap_or_else(|| {
-                dirs::download_dir()
-                    .unwrap_or_else(|| app_dir.join("downloads"))
-                    .to_string_lossy()
-                    .to_string()
-            });
-        std::fs::create_dir_all(&download_dir).ok();
+        // Ensure download dir exists AND aria2 uses it
+        let base_download_dir = resolve_download_dir(&db, &app_dir);
+        std::fs::create_dir_all(&base_download_dir).ok();
+        // Also ensure the aria2 global dir setting matches
+        db.set_setting("download_dir", &base_download_dir.to_string_lossy()).ok();
 
         let port = db.get_setting("aria2_port")
             .ok()
@@ -62,7 +63,7 @@ impl AppState {
             .unwrap_or(6800u16);
 
         let mut aria2 = aria2::Aria2Manager::new(port);
-        match aria2.start(&aria2_path.to_string_lossy(), &download_dir) {
+        match aria2.start(&aria2_path.to_string_lossy(), &base_download_dir.to_string_lossy()) {
             Ok(()) => println!("[bangumiao] aria2 started on port {}", port),
             Err(e) => {
                 eprintln!("[bangumiao] Failed to start aria2: {}", e);
@@ -70,7 +71,17 @@ impl AppState {
             }
         }
 
-        Ok(AppState { db, app_dir, aria2: Mutex::new(aria2) })
+        Ok(AppState { base_download_dir, db, app_dir, aria2: Mutex::new(aria2) })
+    }
+}
+
+fn resolve_download_dir(db: &db::Database, app_dir: &PathBuf) -> PathBuf {
+    let custom = db.get_setting("download_dir")
+        .ok()
+        .filter(|d| !d.is_empty());
+    match custom {
+        Some(d) => PathBuf::from(&d),
+        None => app_dir.join("download"),
     }
 }
 
@@ -93,6 +104,7 @@ pub fn run() {
             commands::rss::remove_subscription,
             commands::rss::toggle_subscription,
             commands::rss::refresh_all_subscriptions,
+            commands::rss::wipe_all_data,
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::download::get_downloads,
@@ -109,6 +121,7 @@ pub fn run() {
             commands::mikan::update_mikan_browser_bounds,
             commands::mikan::mikan_eval,
             commands::mikan::scan_mikan_rss,
+            commands::mikan::fetch_mikan_rss,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

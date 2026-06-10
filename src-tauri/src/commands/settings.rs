@@ -33,12 +33,18 @@ pub fn save_settings(
     state: State<'_, Mutex<AppState>>,
     settings: AppSettings,
 ) -> Result<(), String> {
-    let app = state.lock().map_err(|e| e.to_string())?;
-    let db = &app.db;
-    db.set_setting("download_dir", &settings.download_dir).map_err(|e| e.to_string())?;
-    db.set_setting("refresh_interval", &settings.refresh_interval.to_string()).map_err(|e| e.to_string())?;
-    db.set_setting("aria2_port", &settings.aria2_port.to_string()).map_err(|e| e.to_string())?;
-    db.set_setting("max_concurrent_downloads", &settings.max_concurrent_downloads.to_string()).map_err(|e| e.to_string())?;
-    db.set_setting("auto_delete_torrent", if settings.auto_delete_torrent { "true" } else { "false" }).map_err(|e| e.to_string())?;
+    let mut app = state.lock().map_err(|e| e.to_string())?;
+    app.db.set_setting("download_dir", &settings.download_dir).map_err(|e| e.to_string())?;
+    // Sync base_download_dir with the new setting and ensure it exists
+    if !settings.download_dir.is_empty() {
+        app.base_download_dir = std::path::PathBuf::from(&settings.download_dir);
+    } else {
+        app.base_download_dir = app.app_dir.join("download");
+    }
+    std::fs::create_dir_all(&app.base_download_dir).ok();
+    app.db.set_setting("refresh_interval", &settings.refresh_interval.to_string()).map_err(|e| e.to_string())?;
+    app.db.set_setting("aria2_port", &settings.aria2_port.to_string()).map_err(|e| e.to_string())?;
+    app.db.set_setting("max_concurrent_downloads", &settings.max_concurrent_downloads.to_string()).map_err(|e| e.to_string())?;
+    app.db.set_setting("auto_delete_torrent", if settings.auto_delete_torrent { "true" } else { "false" }).map_err(|e| e.to_string())?;
     Ok(())
 }

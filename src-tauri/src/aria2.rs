@@ -146,9 +146,12 @@ impl Aria2Manager {
         let stream_result = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1));
         let mut stream = match stream_result {
             Ok(s) => s,
-            Err(_) => return Ok(Value::Null),
+            Err(_) => {
+                return Ok(Value::Null);
+            }
         };
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(1))).ok();
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(1))).ok();
         stream.write_all(request.as_bytes()).map_err(|e| format!("Write: {}", e))?;
 
         // Read ALL response bytes
@@ -179,11 +182,24 @@ impl Aria2Manager {
             return Ok(Value::Null);
         }
 
-        serde_json::from_str(json_clean).map_err(|e| format!("JSON parse: {} from '{}'", e, &json_clean[..json_clean.len().min(200)]))
+        serde_json::from_str(json_clean)
+            .map_err(|e| {
+                format!("JSON parse: {} from '{}'", e, &json_clean[..json_clean.len().min(200)])
+            })
     }
 
     pub fn add_uri(&self, uri: &str) -> Result<String, String> {
         let response = self.rpc_call("aria2.addUri", &serde_json::json!([[uri]]))?;
+        response["result"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "No GID returned".to_string())
+    }
+
+    /// Add a URI download with a custom download directory
+    pub fn add_uri_with_dir(&self, uri: &str, dir: &str) -> Result<String, String> {
+        let response = self.rpc_call("aria2.addUri",
+            &serde_json::json!([[uri], {"dir": dir}]))?;
         response["result"]
             .as_str()
             .map(|s| s.to_string())
@@ -281,6 +297,19 @@ impl Drop for Aria2Manager {
 }
 
 impl Aria2Manager {
+    pub fn add_torrent_with_dir(&self, torrent_url: &str, dir: &str) -> Result<String, String> {
+        let torrent_data = reqwest::blocking::get(torrent_url)
+            .and_then(|r| r.bytes())
+            .map_err(|e| format!("Failed to fetch torrent: {}", e))?;
+        let encoded = base64_encode(&torrent_data);
+        let response = self.rpc_call("aria2.addTorrent",
+            &serde_json::json!([encoded, [], {"dir": dir}]))?;
+        response["result"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "No GID returned".to_string())
+    }
+
     pub fn add_torrent_b64(&self, b64: &str) -> Result<String, String> {
         let response = self.rpc_call("aria2.addTorrent", &serde_json::json!([b64]))?;
         response["result"]

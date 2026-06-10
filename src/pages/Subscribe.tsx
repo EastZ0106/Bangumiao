@@ -17,6 +17,8 @@ export default function Subscribe() {
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [refreshMsg, setRefreshMsg] = useState("");
+
   const loadSubs = useCallback(async () => {
     try {
       setLoading(true);
@@ -34,11 +36,28 @@ export default function Subscribe() {
   }, [loadSubs]);
 
   const handleRefresh = async () => {
+    setRefreshMsg("正在刷新...");
     try {
-      await invoke("refresh_all_subscriptions");
+      const result = await invoke<{ new_episodes: number; started_downloads: number }>("refresh_all_subscriptions");
+      setRefreshMsg(`新增 ${result.new_episodes} 集，开始下载 ${result.started_downloads} 个`);
+      await loadSubs();
+      setTimeout(() => setRefreshMsg(""), 4000);
+    } catch (e) {
+      setRefreshMsg("刷新失败: " + String(e));
+      setTimeout(() => setRefreshMsg(""), 4000);
+    }
+  };
+
+  const handleWipe = async () => {
+    if (!confirm("确定要清除所有订阅和剧集记录吗？此操作不可撤销。")) return;
+    try {
+      const msg = await invoke<string>("wipe_all_data");
+      setRefreshMsg(msg);
+      setTimeout(() => setRefreshMsg(""), 3000);
       await loadSubs();
     } catch (e) {
-      console.error("Refresh failed:", e);
+      setRefreshMsg("清除失败: " + String(e));
+      setTimeout(() => setRefreshMsg(""), 4000);
     }
   };
 
@@ -53,38 +72,13 @@ export default function Subscribe() {
           <button className="btn btn-outline" onClick={handleRefresh}>
             刷新全部
           </button>
+          <button className="btn btn-outline" onClick={handleWipe} style={{ color: "var(--color-error)" }}>
+            清除全部
+          </button>
           <button className="btn btn-primary" onClick={() => navigate("/browse")}>
             添加订阅
           </button>
         </div>
       </div>
 
-      {loading ? (
-        <div className="empty-state">
-          <p>加载中...</p>
-        </div>
-      ) : subs.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-state-icon">📡</div>
-          <div className="empty-state-title">还没有订阅任何番剧</div>
-          <p>前往「蜜柑计划」浏览并添加订阅</p>
-        </div>
-      ) : (
-        <div className="card-grid">
-          {subs.map((sub) => (
-            <div className="card" key={sub.id}>
-              <h3 style={{ fontSize: 15, marginBottom: 8 }}>{sub.title}</h3>
-              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                {sub.enabled ? (
-                  <span className="badge badge-success">启用</span>
-                ) : (
-                  <span className="badge badge-warning">暂停</span>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+      {loading 

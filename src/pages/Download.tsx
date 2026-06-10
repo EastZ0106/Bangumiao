@@ -201,7 +201,9 @@ export default function Download() {
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 500, marginBottom: 4 }}>{d.episode_title}</div>
                 {d.subscription_title && (
-                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{d.subscription_title}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                    {d.subscription_title}
+                  </div>
                 )}
               </div>
               <div style={{ minWidth: 150 }}>
@@ -229,8 +231,4 @@ export default function Download() {
               </div>
             </div>
           ))}
-        </div>
-      )}
-    </div>
-  );
-}
+  

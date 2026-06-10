@@ -27,16 +27,7 @@ const VIDEO_EXTENSIONS: &[&str] = &["mkv", "mp4", "avi", "mov", "webm", "flv", "
 #[tauri::command]
 pub fn scan_library(state: State<'_, Mutex<AppState>>) -> Result<Vec<AnimeGroup>, String> {
     let app = state.lock().map_err(|e| e.to_string())?;
-    let download_dir = app
-        .db
-        .get_setting("download_dir")
-        .unwrap_or_default();
-
-    let dir = if download_dir.is_empty() {
-        dirs::download_dir().unwrap_or_else(|| PathBuf::from("."))
-    } else {
-        PathBuf::from(&download_dir)
-    };
+    let dir = app.base_download_dir.clone();
 
     if !dir.exists() {
         return Ok(vec![]);
