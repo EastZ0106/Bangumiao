@@ -12,9 +12,12 @@ pub struct AppSettings {
     pub max_concurrent_downloads: i32,
     #[serde(default = "default_auto_delete")]
     pub auto_delete_torrent: bool,
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
 }
 
 fn default_auto_delete() -> bool { true }
+fn default_close_to_tray() -> bool { true }
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Mutex<AppState>>) -> Result<AppSettings, String> {
@@ -25,6 +28,7 @@ pub fn get_settings(state: State<'_, Mutex<AppState>>) -> Result<AppSettings, St
         aria2_port: app.db.get_setting("aria2_port").unwrap_or("6800".into()).parse().unwrap_or(6800),
         max_concurrent_downloads: app.db.get_setting("max_concurrent_downloads").unwrap_or("3".into()).parse().unwrap_or(3),
         auto_delete_torrent: app.db.get_setting("auto_delete_torrent").unwrap_or("true".into()) == "true",
+        close_to_tray: app.db.get_setting("close_to_tray").unwrap_or("true".into()) == "true",
     })
 }
 
@@ -49,5 +53,6 @@ pub fn save_settings(
     app.db.set_setting("aria2_port", &settings.aria2_port.to_string()).map_err(|e| e.to_string())?;
     app.db.set_setting("max_concurrent_downloads", &settings.max_concurrent_downloads.to_string()).map_err(|e| e.to_string())?;
     app.db.set_setting("auto_delete_torrent", if settings.auto_delete_torrent { "true" } else { "false" }).map_err(|e| e.to_string())?;
+    app.db.set_setting("close_to_tray", if settings.close_to_tray { "true" } else { "false" }).map_err(|e| e.to_string())?;
     Ok(())
 }

@@ -69,6 +69,7 @@ impl Database {
             INSERT OR IGNORE INTO settings (key, value) VALUES ('max_concurrent_downloads', '3');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('download_dir', '');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_delete_torrent', 'true');
+            INSERT OR IGNORE INTO settings (key, value) VALUES ('close_to_tray', 'true');
             "
         )?;
 

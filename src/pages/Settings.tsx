@@ -7,6 +7,7 @@ interface AppSettings {
   aria2_port: number;
   max_concurrent_downloads: number;
   auto_delete_torrent: boolean;
+  close_to_tray: boolean;
 }
 
 export default function Settings() {
@@ -16,6 +17,7 @@ export default function Settings() {
     aria2_port: 6800,
     max_concurrent_downloads: 3,
     auto_delete_torrent: true,
+    close_to_tray: true,
   });
   const [saved, setSaved] = useState(false);
 
@@ -152,6 +154,23 @@ export default function Settings() {
             type="checkbox"
             checked={settings.auto_delete_torrent}
             onChange={(e) => setSettings({ ...settings, auto_delete_torrent: e.target.checked })}
+            style={{ width: 18, height: 18, cursor: "pointer" }}
+          />
+        </div>
+
+        <div className="card" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 500 }}>
+              关闭窗口最小化到系统托盘
+            </label>
+            <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+              点击窗口关闭按钮时隐藏到托盘图标而非退出程序
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            checked={settings.close_to_tray}
+            onChange={(e) => setSettings({ ...settings, close_to_tray: e.target.checked })}
             style={{ width: 18, height: 18, cursor: "pointer" }}
           />
         </div>

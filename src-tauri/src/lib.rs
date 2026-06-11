@@ -13,6 +13,7 @@ pub mod scheduler;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use tauri::{Manager, RunEvent, WindowEvent};
 
 pub struct AppState {
     pub base_download_dir: PathBuf,
@@ -103,6 +104,34 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(app_state))
+        .setup(|app| {
+            let tray_menu = tauri::menu::MenuBuilder::new(app)
+                .text("show", "打开窗口")
+                .separator()
+                .text("quit", "退出")
+                .build()?;
+
+            let _tray = tauri::tray::TrayIconBuilder::new()
+                .tooltip("🐱 bangumiao")
+                .menu(&tray_menu)
+                .on_menu_event(move |app, event| {
+                    match event.id().as_ref() {
+                        "show" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             commands::rss::get_subscriptions,
@@ -129,6 +158,34 @@ pub fn run() {
             commands::mikan::scan_mikan_rss,
             commands::mikan::fetch_mikan_rss,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            match event {
+                RunEvent::WindowEvent { label, event, .. } => {
+                    if label == "main" {
+                        if let WindowEvent::CloseRequested { api, .. } = event {
+                            let close_to_tray = app_handle
+                                .state::<Mutex<AppState>>()
+                                .lock()
+                                .ok()
+                                .map(|s| {
+                                    s.db.get_setting("close_to_tray")
+                                        .unwrap_or("true".into())
+                                        == "true"
+                                })
+                                .unwrap_or(true);
+
+                            if close_to_tray {
+                                api.prevent_close();
+                                if let Some(w) = app_handle.get_webview_window("main") {
+                                    let _ = w.hide();
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        });
 }
