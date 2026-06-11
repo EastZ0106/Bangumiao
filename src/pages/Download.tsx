@@ -17,7 +17,14 @@ export default function Download() {
   const [torrentUrl, setTorrentUrl] = useState("");
   const [torrentTitle, setTorrentTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
+  const showToast = (text: string, ok: boolean) => {
+    setToast({ text, ok });
+    setTimeout(() => setToast(null), 4000);
+  };
 
   const loadDownloads = useCallback(async () => {
     try {
@@ -32,20 +39,18 @@ export default function Download() {
 
   const pollProgress = useCallback(async () => {
     try {
-      const log = await invoke<string>("sync_downloads");
-      if (log && log.length > 5) setErrorMsg(log);
+      await invoke<string>("sync_downloads");
       const data = await invoke<DownloadItem[]>("get_downloads");
       setItems(data);
     } catch (e) { console.error(e); }
   }, []);
 
-  // Start/stop polling based on visibility
   useEffect(() => {
     loadDownloads();
 
     const startPolling = () => {
       if (pollingRef.current) return;
-      pollProgress(); // immediate first sync
+      pollProgress();
       pollingRef.current = setInterval(pollProgress, 2000);
     };
 
@@ -57,16 +62,12 @@ export default function Download() {
     };
 
     const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        startPolling();
-      } else {
-        stopPolling();
-      }
+      if (document.visibilityState === "visible") startPolling();
+      else stopPolling();
     };
 
     startPolling();
     document.addEventListener("visibilitychange", handleVisibility);
-
     return () => {
       stopPolling();
       document.removeEventListener("visibilitychange", handleVisibility);
@@ -85,35 +86,31 @@ export default function Download() {
     try { await invoke("remove_download", { id }); loadDownloads(); } catch (e) { console.error(e); }
   };
 
-  const [errorMsg, setErrorMsg] = useState("");
-
   const handleCleanDir = async () => {
-    setErrorMsg("正在清理...");
+    if (!confirm("确定要清理所有 .torrent 和 .aria2 残留文件吗？\n\n此操作会递归清理下载目录及所有子目录中的中间文件，不会删除已下载的视频。")) return;
+    setCleaning(true);
     try {
       const msg = await invoke<string>("clean_download_dir");
-      setErrorMsg(msg);
-      setTimeout(() => setErrorMsg(""), 3000);
+      showToast(msg, true);
     } catch (e) {
-      setErrorMsg("清理失败: " + String(e));
+      showToast("清理失败: " + String(e), false);
+    } finally {
+      setCleaning(false);
     }
   };
 
   const handleAddTorrent = async () => {
     if (!torrentUrl.trim() || !torrentTitle.trim()) return;
     setSubmitting(true);
-    setErrorMsg("");
     try {
-      setErrorMsg("正在添加下载任务...");
       await invoke("add_torrent_download", { torrentUrl: torrentUrl.trim(), title: torrentTitle.trim() });
-      setErrorMsg("下载任务已添加！");
       setTorrentUrl("");
       setTorrentTitle("");
       setShowForm(false);
       loadDownloads();
-      setTimeout(() => setErrorMsg(""), 2000);
+      showToast("下载任务已添加", true);
     } catch (e) {
-      setErrorMsg("添加失败: " + String(e));
-      console.error("Failed to add torrent:", e);
+      showToast("添加失败: " + String(e), false);
     } finally {
       setSubmitting(false);
     }
@@ -133,13 +130,32 @@ export default function Download() {
 
   return (
     <div>
+      {/* ── Toast ── */}
+      {toast && (
+        <div style={{
+          position: "fixed", top: 16, right: 16, zIndex: 2000,
+          padding: "10px 16px", borderRadius: 8, fontSize: 13,
+          background: toast.ok ? "#dbeafe" : "#fee2e2",
+          color: toast.ok ? "#1e40af" : "#991b1b",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+          maxWidth: 400,
+        }}>
+          {toast.ok ? "✓ " : "✗ "}{toast.text}
+        </div>
+      )}
+
       <div className="page-header">
         <div>
           <h1 className="page-title">下载管理</h1>
           <p className="page-subtitle">查看和管理正在下载与已完成的番剧</p>
         </div>
-        <button className="btn btn-outline" onClick={handleCleanDir} style={{ marginRight: 8 }}>
-          清理残留文件
+        <button
+          className="btn btn-outline"
+          onClick={handleCleanDir}
+          disabled={cleaning}
+          style={{ marginRight: 8 }}
+        >
+          {cleaning ? "清理中..." : "清理残留文件"}
         </button>
         <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>
           {showForm ? "取消" : "添加下载"}
@@ -151,7 +167,7 @@ export default function Download() {
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <input
               type="text"
-              placeholder="磁链 (magnet:) 或 .torrent 文件路径（如 C:\Users\WINDOWS\Downloads\xxx.torrent）"
+              placeholder="磁链 (magnet:) 或 .torrent 文件路径"
               value={torrentUrl}
               onChange={(e) => setTorrentUrl(e.target.value)}
               style={{
@@ -177,11 +193,6 @@ export default function Download() {
             >
               {submitting ? "添加中..." : "开始下载"}
             </button>
-            {errorMsg && (
-              <div style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, background: errorMsg.includes("失败") ? "#fee2e2" : "#dbeafe", color: errorMsg.includes("失败") ? "#991b1b" : "#1e40af" }}>
-                {errorMsg}
-              </div>
-            )}
           </div>
         </div>
       )}
