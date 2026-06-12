@@ -2,15 +2,22 @@
 
 Tauri 2.x 桌面番剧追番工具，整合蜜柑计划浏览、RSS 订阅、BT 下载和本地番剧库管理，Windows 本地运行。
 
+## 设计
+
+暖色纸质感主题 — 仿旧书页的米色/暖棕配色，衬线字体标题，每栏配有猫咪主题简笔 SVG 插画，打造"旧书店午后书房"的松弛氛围。
+
 ## 功能
 
 - **蜜柑计划内嵌浏览** — 原生 WebView 加载 mikanani.me，支持前进/后退/主页导航
-- **RSS 一键订阅** — 扫描番剧详情页字幕组，预览剧集列表后一键订阅；订阅后自动抓取 RSS 开始下载
-- **BT 下载管理** — aria2c 侧载（JSON-RPC over TCP），支持磁链 / 本地种子 / 远程 URL；实时进度轮询，暂停/恢复/删除
+- **RSS 一键订阅** — 扫描番剧详情页字幕组，预览剧集列表后选择自动下载或手动管理模式一键订阅
+- **手动管理模式** — 新剧集进入待处理区按番剧分组，勾选后批量开始下载，重复集数高亮提示
+- **BT 下载管理** — aria2c 侧载（JSON-RPC over TCP 裸 HTTP），支持磁链 / 本地种子 / 远程 URL；实时进度轮询，暂停/恢复/删除
 - **本地番剧库** — 递归扫描下载目录中的视频文件（mkv/mp4 等），智能解析文件名提取番剧标题和集数，按番剧分组，标记已看
-- **定时刷新** — tokio 后台调度器按设定间隔自动拉取 RSS 发现新剧集
+- **定时刷新** — 后台调度器按设定间隔自动拉取 RSS 发现新剧集
+- **系统托盘** — 关闭窗口自动最小化到托盘，后台静默继续下载和刷新
 - **残留文件清理** — 一键递归清理所有子目录中的 `.torrent` / `.aria2` 中间文件
-- **设置** — 下载目录、刷新间隔、aria2 端口、最大并发数、自动删除种子
+- **设置** — 下载目录、刷新间隔、aria2 端口、最大并发数、自动删除种子、最小化到托盘
+- **帮助 & 关于** — 内置用户手册 + Bug 邮件反馈
 - **SQLite 持久化** — WAL 模式，自动建表迁移，存储订阅/剧集/观看记录
 
 ## 技术栈
@@ -27,13 +34,18 @@ Tauri 2.x 桌面番剧追番工具，整合蜜柑计划浏览、RSS 订阅、BT 
 ```
 bangumiao/
 ├── src/                          # React 前端
-│   ├── components/Sidebar.tsx    # 侧边导航栏
+│   ├── components/
+│   │   ├── Sidebar.tsx           # 侧边导航栏
+│   │   └── PageIllustration.tsx  # 页面插图组件
 │   ├── pages/
 │   │   ├── Subscribe.tsx         # 订阅列表（首页）
 │   │   ├── MikanBrowser.tsx      # 蜜柑计划内嵌浏览 + RSS 抓取
 │   │   ├── Download.tsx          # 下载管理
 │   │   ├── Library.tsx           # 本地番剧库
-│   │   └── Settings.tsx          # 设置
+│   │   ├── Settings.tsx          # 设置
+│   │   ├── Help.tsx              # 帮助
+│   │   └── About.tsx             # 关于
+│   ├── assets/illustrations/     # SVG 插画组件
 │   └── styles/                   # 全局样式 & 主题变量
 ├── src-tauri/                    # Rust 后端
 │   └── src/
@@ -43,13 +55,14 @@ bangumiao/
 │       ├── aria2.rs              # aria2c JSON-RPC 客户端（裸 TCP/HTTP）
 │       ├── rss_parser.rs         # RSS XML 解析 + 集数提取
 │       ├── filename.rs           # 文件名智能解析（番剧标题 & 集数）
-│       ├── scheduler.rs          # tokio 定时 RSS 刷新
+│       ├── scheduler.rs          # 定时 RSS 刷新
 │       └── commands/
 │           ├── mikan.rs          # 蜜柑 WebView 操作 + RSS 扫描/抓取
 │           ├── rss.rs            # 订阅增删改查 + 全量刷新
 │           ├── download.rs       # 下载状态同步/暂停/恢复/删除/清理
 │           ├── library.rs        # 本地视频扫描 + 标记已看
-│           └── settings.rs       # 设置读写
+│           ├── settings.rs       # 设置读写
+│           └── feedback.rs       # Bug 邮件反馈
 ├── download/                     # 默认下载目录（gitignore）
 ├── package.json                  # Node 依赖
 ├── pnpm-lock.yaml                # pnpm 锁文件
