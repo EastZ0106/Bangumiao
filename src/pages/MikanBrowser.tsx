@@ -19,6 +19,7 @@ interface RssEpisode {
 export default function MikanBrowser() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [webviewOpen, setWebviewOpen] = useState(false);
+  const lastUrlRef = useRef<string>("");
 
   const navigate = useCallback((action: "back" | "forward" | "reload" | "home") => {
     const jsMap: Record<string, string> = {
@@ -50,12 +51,14 @@ export default function MikanBrowser() {
       y: rect.top,
       width: rect.width,
       height: rect.height,
+      url: lastUrlRef.current || "",
     }).catch((e) => console.error("Failed to open mikan browser:", e));
     setWebviewOpen(true);
   }, []);
 
   const closeWebView = useCallback(async () => {
-    await invoke("close_mikan_browser").catch(() => {});
+    const currentUrl = await invoke<string>("close_mikan_browser").catch(() => "");
+    if (currentUrl) lastUrlRef.current = currentUrl;
     setWebviewOpen(false);
   }, []);
 

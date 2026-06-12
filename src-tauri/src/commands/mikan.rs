@@ -10,14 +10,16 @@ pub async fn open_mikan_browser(
     y: f64,
     width: f64,
     height: f64,
+    url: Option<String>,
 ) -> Result<String, String> {
     if let Some(existing) = window.get_webview("mikan-browser") {
         let _ = existing.close();
     }
 
-    let url: url::Url = "https://mikanani.me".parse().map_err(|e: url::ParseError| e.to_string())?;
+    let url_str = url.filter(|u| !u.is_empty()).unwrap_or_else(|| "https://mikanani.me".into());
+    let parsed_url: url::Url = url_str.parse().map_err(|e: url::ParseError| e.to_string())?;
 
-    let builder = WebviewBuilder::new("mikan-browser", WebviewUrl::External(url))
+    let builder = WebviewBuilder::new("mikan-browser", WebviewUrl::External(parsed_url))
         .focused(true)
         .on_navigation(|_url| true)
         .initialization_script(
@@ -55,11 +57,21 @@ pub async fn open_mikan_browser(
 }
 
 #[tauri::command]
-pub async fn close_mikan_browser(window: tauri::Window) -> Result<(), String> {
+pub async fn close_mikan_browser(window: tauri::Window) -> Result<String, String> {
+    let mut current_url = String::new();
     if let Some(webview) = window.get_webview("mikan-browser") {
+        // Capture current URL before closing
+        let (tx, rx) = std::sync::mpsc::channel();
+        webview.eval_with_callback("window.location.href", move |r| {
+            let _ = tx.send(r);
+        }).ok();
+        if let Ok(raw) = rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            // eval_with_callback returns a JSON-encoded string
+            current_url = serde_json::from_str(&raw).unwrap_or(raw);
+        }
         webview.close().map_err(|e| e.to_string())?;
     }
-    Ok(())
+    Ok(current_url)
 }
 
 #[tauri::command]
