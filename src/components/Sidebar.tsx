@@ -7,6 +7,8 @@ const navItems = [
   { to: "/downloads", label: "下载管理", icon: "⬇" },
   { to: "/library", label: "本地番剧", icon: "📂" },
   { to: "/settings", label: "设置", icon: "⚙" },
+  { to: "/help", label: "帮助", icon: "❓" },
+  { to: "/about", label: "关于", icon: "ℹ" },
 ];
 
 export default function Sidebar() {

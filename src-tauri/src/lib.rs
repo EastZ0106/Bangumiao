@@ -179,6 +179,7 @@ pub fn run() {
             commands::library::mark_watched,
             commands::library::open_file,
             commands::library::open_file_dir,
+            commands::feedback::send_feedback,
             commands::mikan::open_mikan_browser,
             commands::mikan::close_mikan_browser,
             commands::mikan::update_mikan_browser_bounds,

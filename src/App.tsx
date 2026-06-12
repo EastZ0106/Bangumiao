@@ -5,6 +5,8 @@ import MikanBrowser from "./pages/MikanBrowser";
 import Download from "./pages/Download";
 import Library from "./pages/Library";
 import Settings from "./pages/Settings";
+import Help from "./pages/Help";
+import About from "./pages/About";
 import "./styles/theme.css";
 import "./styles/App.css";
 
@@ -20,6 +22,8 @@ function App() {
             <Route path="/downloads" element={<Download />} />
             <Route path="/library" element={<Library />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/help" element={<Help />} />
+            <Route path="/about" element={<About />} />
           </Routes>
         </main>
       </div>
