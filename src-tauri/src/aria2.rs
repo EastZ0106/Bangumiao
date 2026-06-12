@@ -72,6 +72,10 @@ impl Aria2Manager {
         let session_file = format!("{}/aria2.session", session_dir);
         // Ensure session directory exists (use app_dir which is already created)
         std::fs::create_dir_all(session_dir).ok();
+        // Create session file if it doesn't exist (aria2c requires --input-file to exist)
+        if !std::path::Path::new(&session_file).exists() {
+            let _ = std::fs::write(&session_file, "");
+        }
 
         let args = [
             "--enable-rpc",
