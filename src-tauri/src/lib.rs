@@ -111,7 +111,10 @@ pub fn run() {
                 .text("quit", "退出")
                 .build()?;
 
+            let icon = app.default_window_icon().cloned()
+                .ok_or_else(|| Box::<dyn std::error::Error>::from("missing icon"))?;
             let _tray = tauri::tray::TrayIconBuilder::new()
+                .icon(icon)
                 .tooltip("🐱 bangumiao")
                 .menu(&tray_menu)
                 .on_menu_event(move |app, event| {
