@@ -297,19 +297,27 @@ pub fn add_torrent_download(
 
 #[tauri::command]
 pub fn clean_download_dir(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
-    let download_dir = {
+    let (download_dir, active_gids) = {
         let app = state.lock().map_err(|e| e.to_string())?;
-        app.base_download_dir.to_string_lossy().to_string()
+        let download_dir = app.base_download_dir.to_string_lossy().to_string();
+        let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT gid FROM episodes WHERE status IN ('active','paused','pending') AND gid != ''")
+            .map_err(|e| e.to_string())?;
+        let gids: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        (download_dir, gids)
     };
     if download_dir.is_empty() { return Ok("No download directory configured".into()); }
     let dir = std::path::Path::new(&download_dir);
     if !dir.exists() { return Ok(format!("Does not exist: {}", download_dir)); }
     let mut cleaned = Vec::new();
-    clean_dir_recursive(dir, &mut cleaned);
+    clean_dir_recursive(dir, &mut cleaned, &active_gids);
     Ok(format!("Cleaned {} files: {}", cleaned.len(), cleaned.join(", ")))
 }
 
-fn clean_dir_recursive(dir: &std::path::Path, cleaned: &mut Vec<String>) {
+fn clean_dir_recursive(dir: &std::path::Path, cleaned: &mut Vec<String>, active_gids: &[String]) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -318,8 +326,11 @@ fn clean_dir_recursive(dir: &std::path::Path, cleaned: &mut Vec<String>) {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if path.is_dir() {
-            clean_dir_recursive(&path, cleaned);
+            clean_dir_recursive(&path, cleaned, active_gids);
         } else if name.ends_with(".torrent") || name.ends_with(".torrent.aria2") || name.ends_with(".aria2") {
+            // Skip files belonging to active/paused/pending downloads
+            let stem = name.replace(".torrent.aria2", "").replace(".torrent", "").replace(".aria2", "");
+            if active_gids.iter().any(|g| g == &stem) { continue; }
             let _ = std::fs::remove_file(&path);
             cleaned.push(format!("{}/{}", dir.file_name().unwrap_or_default().to_string_lossy(), name));
         }
