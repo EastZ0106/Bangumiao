@@ -63,11 +63,15 @@ impl Aria2Manager {
             .is_ok()
     }
 
-    pub fn start(&mut self, aria2_path: &str, download_dir: &str) -> Result<(), String> {
+    pub fn start(&mut self, aria2_path: &str, download_dir: &str, session_dir: &str) -> Result<(), String> {
         let _ = Command::new("taskkill")
             .args(["/F", "/IM", "aria2c-x86_64-pc-windows-msvc.exe"])
             .output();
         std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let session_file = format!("{}/aria2.session", session_dir);
+        // Ensure session directory exists (use app_dir which is already created)
+        std::fs::create_dir_all(session_dir).ok();
 
         let args = [
             "--enable-rpc",
@@ -89,6 +93,9 @@ impl Aria2Manager {
             "--check-certificate=false",
             "--quiet=true",
             "--no-conf=true",
+            &format!("--save-session={}", session_file),
+            &format!("--input-file={}", session_file),
+            "--save-session-interval=30",
         ];
 
         let child = Command::new(aria2_path)

@@ -18,6 +18,7 @@ interface EpisodeItem {
 export default function Library() {
   const [groups, setGroups] = useState<AnimeGroup[]>([]);
   const [loading, setLoading] = useState(true);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const loadLibrary = useCallback(async () => {
     try {
@@ -44,6 +45,23 @@ export default function Library() {
     }
   };
 
+  const toggleExpand = (title: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(title)) next.delete(title);
+      else next.add(title);
+      return next;
+    });
+  };
+
+  const handleOpenFile = async (filePath: string) => {
+    try { await invoke("open_file", { filePath }); } catch (e) { console.error(e); }
+  };
+
+  const handleOpenDir = async (filePath: string) => {
+    try { await invoke("open_file_dir", { filePath }); } catch (e) { console.error(e); }
+  };
+
   return (
     <div>
       <div className="page-header">
@@ -65,48 +83,90 @@ export default function Library() {
           <p>下载番剧后，此处将自动按番剧分类展示</p>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {groups.map((g) => (
-            <div className="card" key={g.title}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                <h3 style={{ fontSize: 16, fontWeight: 600 }}>{g.title}</h3>
-                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  {g.episodes.filter((e) => e.watched).length} / {g.episodes.length} 已看
-                </span>
-              </div>
-              <div style={{ fontSize: 12 }}>
-                {g.episodes
-                  .sort((a, b) => (a.episode_number ?? 0) - (b.episode_number ?? 0))
-                  .map((ep) => (
-                    <div
-                      key={ep.file_path}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "6px 8px",
-                        borderRadius: 6,
-                        background: ep.watched ? "var(--color-primary-50)" : "transparent",
-                      }}
-                    >
-                      <span style={{ flex: 1, color: ep.watched ? "var(--text-muted)" : "var(--text-primary)" }}>
-                        {ep.episode_number != null ? `第 ${ep.episode_number} 话` : ""} — {ep.file_name}
-                      </span>
-                      {!ep.watched && (
-                        <button
-                          className="btn btn-ghost"
-                          style={{ fontSize: 12, padding: "3px 10px" }}
-                          onClick={() => markWatched(ep.file_path)}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {groups.map((g) => {
+            const isExpanded = expandedIds.has(g.title);
+            const watchedCount = g.episodes.filter((e) => e.watched).length;
+            // Use the first episode's path to locate the parent folder
+            const firstEpPath = g.episodes[0]?.file_path || "";
+
+            return (
+              <div className="card" key={g.title} style={{ padding: "12px 16px" }}>
+                {/* Title row — click to expand/collapse */}
+                <div
+                  onClick={() => toggleExpand(g.title)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    cursor: "pointer", userSelect: "none",
+                  }}
+                >
+                  <span style={{ fontSize: 14 }}>{isExpanded ? "▾" : "▸"}</span>
+                  <span style={{ fontWeight: 600, fontSize: 15, flex: 1 }}>{g.title}</span>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)", marginRight: 8 }}>
+                    {watchedCount} / {g.episodes.length} 已看
+                  </span>
+                  <button
+                    className="btn btn-ghost"
+                    style={{ fontSize: 11, padding: "2px 8px", flexShrink: 0 }}
+                    onClick={(e) => { e.stopPropagation(); handleOpenDir(firstEpPath); }}
+                  >
+                    打开文件夹
+                  </button>
+                </div>
+
+                {/* Episode list — shown when expanded */}
+                {isExpanded && (
+                  <div style={{ marginTop: 8, borderTop: "1px solid var(--border-color)", paddingTop: 6 }}>
+                    {g.episodes
+                      .sort((a, b) => (a.episode_number ?? 0) - (b.episode_number ?? 0))
+                      .map((ep) => (
+                        <div
+                          key={ep.file_path}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 8,
+                            padding: "5px 4px", fontSize: 13,
+                            borderBottom: "1px solid var(--border-color)",
+                            background: ep.watched ? "#f0fdf4" : "transparent",
+                            borderRadius: 4,
+                          }}
                         >
-                          标记已看
-                        </button>
-                      )}
-                      {ep.watched && <span className="badge badge-success">已看</span>}
-                    </div>
-                  ))}
+                          <span style={{
+                            flex: 1, minWidth: 0,
+                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                            color: ep.watched ? "var(--text-muted)" : "var(--text-primary)",
+                          }}>
+                            {ep.episode_number != null && (
+                              <span style={{ color: "var(--text-muted)", marginRight: 6, fontSize: 11 }}>
+                                第{ep.episode_number % 1 === 0 ? ep.episode_number : ep.episode_number.toFixed(1)}话
+                              </span>
+                            )}
+                            {ep.file_name}
+                          </span>
+                          <button
+                            className="btn btn-ghost"
+                            style={{ fontSize: 11, padding: "2px 8px", flexShrink: 0 }}
+                            onClick={() => handleOpenFile(ep.file_path)}
+                          >
+                            播放
+                          </button>
+                          {!ep.watched ? (
+                            <button
+                              className="btn btn-ghost"
+                              style={{ fontSize: 11, padding: "2px 8px", flexShrink: 0 }}
+                              onClick={() => markWatched(ep.file_path)}
+                            >
+                              标记已看
+                            </button>
+                          ) : (
+                            <span className="badge badge-success" style={{ fontSize: 11 }}>已看</span>
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

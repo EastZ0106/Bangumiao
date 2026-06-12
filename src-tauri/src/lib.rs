@@ -62,7 +62,7 @@ impl AppState {
             .unwrap_or(6800u16);
 
         let mut aria2 = aria2::Aria2Manager::new(port);
-        match aria2.start(&aria2_path.to_string_lossy(), &base_download_dir.to_string_lossy()) {
+        match aria2.start(&aria2_path.to_string_lossy(), &base_download_dir.to_string_lossy(), &app_dir.to_string_lossy()) {
             Ok(()) => println!("[bangumiao] aria2 started on port {}", port),
             Err(e) => {
                 eprintln!("[bangumiao] Failed to start aria2: {}", e);
@@ -162,6 +162,8 @@ pub fn run() {
             commands::download::clean_download_dir,
             commands::library::scan_library,
             commands::library::mark_watched,
+            commands::library::open_file,
+            commands::library::open_file_dir,
             commands::mikan::open_mikan_browser,
             commands::mikan::close_mikan_browser,
             commands::mikan::update_mikan_browser_bounds,

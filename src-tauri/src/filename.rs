@@ -32,15 +32,17 @@ fn strip_extension(filename: &str) -> &str {
 
 fn extract_title(name: &str) -> (String, String) {
     // Remove known bracket tags to isolate the title
+    //
+    // Convention: [SubGroup] Title - Ep [Tags]
+    // The first [...] is always a subtitle group name — always skip it.
+    // Later [...] are technical tags (codec/resolution/language/source).
 
-    // Try to find the main title: everything after the first bracket group(s)
-    // Example: [LoliHouse] Youkoso Jitsuryoku... S4 - 01 [WebRip 1080p...]
-    // Title should be: Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e S4
-
-    // Strategy: collect text between first non-subtitle-info bracket and last info bracket
     let parts: Vec<&str> = name.split(&['[', ']'][..]).collect();
     let mut text_parts: Vec<&str> = Vec::new();
     let mut idx = 0;
+
+    // Track the first non-empty bracket part (subtitle group)
+    let mut first_bracket_seen = false;
 
     while idx < parts.len() {
         let part = parts[idx].trim();
@@ -49,8 +51,17 @@ fn extract_title(name: &str) -> (String, String) {
             continue;
         }
 
-        // Check if this part looks like a subtitle group / codec / resolution tag
-        if is_tag_part(part) {
+        // Every odd index is content inside brackets
+        let inside_brackets = idx % 2 == 1;
+
+        if inside_brackets && !first_bracket_seen {
+            // First bracketed part: always treat as subtitle group, skip it
+            first_bracket_seen = true;
+            idx += 1;
+            continue;
+        }
+
+        if inside_brackets && is_tag_part(part) {
             idx += 1;
             continue;
         }
@@ -102,11 +113,21 @@ fn is_tag_part(s: &str) -> bool {
     let subtitle_groups = [
         "LOLIHOUSE", "BEANSUB", "FZSD", "PRE-S", "Y-RAWS", "NC-RAWS",
         "COOLGIRLS", "MAKAIKAISUB", "SWSUB", "KISSSUB", "SAKURATOON",
+        "ANi", "HKACG", "CATA", "DHR", "DMG", "DMS", "DYMD", "EMD",
+        "KNA", "KTKJ", "LHZ", "LITEN", "MCE", "MINGY", "NEO",
+        "OMOE", "POPGO", "QZL", "RKS", "SAKURA", "SC", "SFEO", "SJ",
+        "SK", "SOFCJ", "SOS", "SP", "SSA", "SUBPIG", "SUM", "SW",
+        "TOKYO", "UHA", "UHAW", "VCB", "WAKABA", "XKUN", "XX", "YUI",
+        "YYQ", "ZERO", "ZYZ", "SWEETSUB", "MOOZZI2", "REINFORCE",
+        "ANK", "LITTLEBAKAS", "DOREMI", "EMBER", "B-GLOBAL", "I'S",
+        "AIVC", "AI-RAWS", "LOWPOWER", "SNOW-RAWS",
+        "LOLIHOUSE", "BEANSUB", "MAKAIKAISUB", "NC-RAWS", "Y-Raws",
+        "PRELUD", "H-ED", "AI-Raws", "REINFORCE", "OWA",
     ];
 
     // If more than half the parts are tags, treat it as a tag part
+    // Also always treat it as a tag if any fragment matches a known subtitle group
     tag_count as f64 / parts.len() as f64 >= 0.5
-        || parts.iter().any(|p| subtitle_groups.contains(&p))
         || parts.iter().any(|p| {
             let p_upper = p.to_uppercase();
             subtitle_groups.iter().any(|g| p_upper == *g || p_upper.contains(g))
