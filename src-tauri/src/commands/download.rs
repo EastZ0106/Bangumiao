@@ -379,19 +379,30 @@ pub fn start_download(
     std::fs::create_dir_all(&sub_dir).ok();
 
     let aria2 = app.aria2.lock().map_err(|e| e.to_string())?;
+    let port = aria2.port();
+    // Release the lock on AppState (and aria2 inside it) before making aria2 RPC calls
+    // The Aria2Manager uses a separate TcpStream connection, so we don't need to hold
+    // the lock during the RPC. Holding it causes the connect_timeout because aria2
+    // spawning / port opening race condition.
+    drop(aria2);
+    drop(app);
+
+    if !Aria2Manager::port_is_open(port) {
+        return Err(format!("aria2c (port {}) is not reachable. Please wait a moment and retry.", port));
+    }
     let gid = if !torrent_url.is_empty() {
-        aria2.add_torrent_with_dir(&torrent_url, &sub_dir.to_string_lossy())
+        Aria2Manager::new(port).add_torrent_with_dir(&torrent_url, &sub_dir.to_string_lossy())
     } else if !magnet_uri.is_empty() {
-        aria2.add_uri_with_dir(&magnet_uri, &sub_dir.to_string_lossy())
+        Aria2Manager::new(port).add_uri_with_dir(&magnet_uri, &sub_dir.to_string_lossy())
     } else {
         return Err("No torrent URL or magnet URI available".to_string());
-    }.map_err(|e| e.to_string())?;
+    }.map_err(|e| format!("aria2 RPC failed: {}", e))?;
 
     if gid.is_empty() {
         return Err("aria2 returned empty GID".into());
     }
 
-    drop(aria2);
+    let app = state.lock().map_err(|e| e.to_string())?;
     let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE episodes SET status = 'active', gid = ?1 WHERE id = ?2",
