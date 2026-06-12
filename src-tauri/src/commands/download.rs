@@ -450,12 +450,20 @@ pub fn batch_start_downloads(
         std::fs::create_dir_all(&sub_dir).ok();
 
         let gid = {
-            let app = state.lock().map_err(|e| e.to_string())?;
-            let aria2 = app.aria2.lock().map_err(|e| e.to_string())?;
+            let port = {
+                let app = state.lock().map_err(|e| e.to_string())?;
+                let port = app.aria2.lock().map_err(|e| e.to_string())?.port();
+                port
+            };
+            if !crate::aria2::Aria2Manager::port_is_open(port) {
+                errors.push(format!("{}: aria2 not reachable", id));
+                continue;
+            }
+            let tmp_aria2 = crate::aria2::Aria2Manager::new(port);
             let r = if !torrent_url.is_empty() {
-                aria2.add_torrent_with_dir(&torrent_url, &sub_dir.to_string_lossy())
+                tmp_aria2.add_torrent_with_dir(&torrent_url, &sub_dir.to_string_lossy())
             } else if !magnet_uri.is_empty() {
-                aria2.add_uri_with_dir(&magnet_uri, &sub_dir.to_string_lossy())
+                tmp_aria2.add_uri_with_dir(&magnet_uri, &sub_dir.to_string_lossy())
             } else {
                 Err("No torrent URL or magnet URI".into())
             };
