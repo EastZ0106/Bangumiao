@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Write};
+use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 
 pub struct Aria2Manager {
     process: Option<Child>,
@@ -66,6 +70,7 @@ impl Aria2Manager {
     pub fn start(&mut self, aria2_path: &str, download_dir: &str, session_dir: &str) -> Result<(), String> {
         let _ = Command::new("taskkill")
             .args(["/F", "/IM", "aria2c-x86_64-pc-windows-msvc.exe"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output();
         std::thread::sleep(std::time::Duration::from_millis(300));
 
@@ -104,6 +109,7 @@ impl Aria2Manager {
 
         let child = Command::new(aria2_path)
             .args(&args)
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Failed to start aria2: {}", e))?;
 
