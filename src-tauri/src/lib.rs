@@ -63,7 +63,22 @@ impl AppState {
 
         let mut aria2 = aria2::Aria2Manager::new(port);
         match aria2.start(&aria2_path.to_string_lossy(), &base_download_dir.to_string_lossy(), &app_dir.to_string_lossy()) {
-            Ok(()) => println!("[bangumiao] aria2 started on port {}", port),
+            Ok(()) => {
+                // Wait for aria2 to be ready
+                let mut ready = false;
+                for _ in 0..40 {
+                    if aria2::Aria2Manager::port_is_open(port) {
+                        ready = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                if ready {
+                    println!("[bangumiao] aria2 started on port {}", port);
+                } else {
+                    eprintln!("[bangumiao] aria2 process started but port {} not open after 10s", port);
+                }
+            }
             Err(e) => {
                 eprintln!("[bangumiao] Failed to start aria2: {}", e);
                 eprintln!("[bangumiao] Download features will be limited");
