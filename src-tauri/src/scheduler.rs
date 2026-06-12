@@ -1,13 +1,12 @@
 use std::time::Duration;
-use tokio::time::interval;
-
-use crate::AppState;
 use std::sync::Mutex;
 use tauri::Manager;
 
+use crate::AppState;
+
 pub fn start_scheduler(app_handle: tauri::AppHandle) {
-    tokio::spawn(async move {
-        // Skip first immediate tick — wait one interval before first refresh
+    std::thread::spawn(move || {
+        // Wait one interval before first refresh
         let initial = {
             let state = app_handle.state::<Mutex<AppState>>();
             let app = state.lock().unwrap();
@@ -16,13 +15,10 @@ pub fn start_scheduler(app_handle: tauri::AppHandle) {
                 .parse::<u64>()
                 .unwrap_or(30)
         };
-        let mut tick = interval(Duration::from_secs(initial * 60));
-        tick.tick().await;
+        std::thread::sleep(Duration::from_secs(initial * 60));
 
         loop {
-            tick.tick().await;
-
-            // Re-read interval each cycle so settings changes take effect
+            // Read interval and subscriptions in one lock
             let (current_interval, subs, known_titles, base_dir, port) = {
                 let state = app_handle.state::<Mutex<AppState>>();
                 let app = state.lock().unwrap();
@@ -35,14 +31,7 @@ pub fn start_scheduler(app_handle: tauri::AppHandle) {
                 let dir = app.base_download_dir.clone();
                 let p = app.aria2.lock().unwrap().port();
                 (interval_val, subs, known, dir, p)
-            }; // lock released here
-
-            let new_period = Duration::from_secs(current_interval * 60);
-            if tick.period() != new_period {
-                tick = interval(new_period);
-                tick.tick().await;
-                continue;
-            }
+            };
 
             for sub in subs {
                 let (_sub_id, sub_title, rss_url, auto_download) = (&sub.0, &sub.1, &sub.2, sub.3);
@@ -68,7 +57,6 @@ pub fn start_scheduler(app_handle: tauri::AppHandle) {
                             } else {
                                 None
                             };
-                            // Re-lock to insert episode
                             {
                                 let state = app_handle.state::<Mutex<AppState>>();
                                 let app = state.lock().unwrap();
@@ -86,6 +74,17 @@ pub fn start_scheduler(app_handle: tauri::AppHandle) {
                     }
                 }
             }
+
+            sleep_interval(current_interval);
         }
     });
+}
+
+fn sleep_interval(minutes: u64) {
+    // Sleep in 10-second chunks so shutdown can interrupt, and interval
+    // changes are picked up more quickly (next loop re-reads from DB)
+    let chunks = minutes * 6; // 6 chunks of 10s per minute
+    for _ in 0..chunks {
+        std::thread::sleep(Duration::from_secs(10));
+    }
 }
