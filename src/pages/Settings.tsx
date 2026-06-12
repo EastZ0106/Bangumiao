@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import PageIllustration from "../components/PageIllustration";
 
 interface AppSettings {
   download_dir: string;
@@ -47,9 +48,12 @@ export default function Settings() {
   return (
     <div style={{ maxWidth: 600 }}>
       <div className="page-header">
-        <div>
-          <h1 className="page-title">设置</h1>
-          <p className="page-subtitle">配置下载、刷新等选项</p>
+        <div className="page-header-left">
+          <PageIllustration page="/settings" />
+          <div>
+            <h1 className="page-title">设置</h1>
+            <p className="page-subtitle">配置下载、刷新等选项</p>
+          </div>
         </div>
         <button className="btn btn-primary" onClick={handleSave}>
           {saved ? "已保存" : "保存设置"}

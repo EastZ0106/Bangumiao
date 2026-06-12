@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import PageIllustration from "../components/PageIllustration";
 
 export default function About() {
   const [name, setName] = useState("");
@@ -48,11 +49,14 @@ export default function About() {
   return (
     <div style={{ maxWidth: 620 }}>
       <div className="page-header">
-        <div>
-          <h1 className="page-title">关于</h1>
-          <p className="page-subtitle">bangumiao — 追番桌面助手</p>
+        <div className="page-header-left">
+          <PageIllustration page="/about" />
+          <div>
+            <h1 className="page-title">关于</h1>
+            <p className="page-subtitle">bangumiao — 追番桌面助手</p>
+          </div>
         </div>
-        <span className="badge" style={{ background: "#3b82f6", color: "#fff" }}>v0.2.x</span>
+        <span className="badge" style={{ background: "var(--color-primary-600)", color: "#FFFCF7" }}>v0.2.x</span>
       </div>
 
       {/* Credits */}
@@ -111,8 +115,8 @@ export default function About() {
         {msg && (
           <div style={{
             padding: "8px 12px", borderRadius: 6, fontSize: 12, marginBottom: 12,
-            background: msg.includes("失败") ? "#fee2e2" : "#dbeafe",
-            color: msg.includes("失败") ? "#991b1b" : "#1e40af",
+            background: msg.includes("失败") ? "var(--toast-error-bg)" : "var(--toast-success-bg)",
+            color: msg.includes("失败") ? "var(--toast-error-text)" : "var(--toast-success-text)",
           }}>
             {msg}
           </div>

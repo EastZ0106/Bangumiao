@@ -1,0 +1,13 @@
+.page-illustration {
+  width: 200px;
+  height: 120px;
+  flex-shrink: 0;
+  opacity: 0.85;
+  margin-left: auto;
+}
+
+@media (max-width: 700px) {
+  .page-illustration {
+    display: none;
+  }
+}

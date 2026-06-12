@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import PageIllustration from "../components/PageIllustration";
 
 interface SubgroupInfo {
   subgroup_id: string;
@@ -214,36 +215,34 @@ export default function MikanBrowser() {
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <div className="page-header">
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div>
+        <div className="page-header-left">
+          <PageIllustration page="/browse" />
+          <div style={{ flex: 1 }}>
             <h1 className="page-title">蜜柑计划</h1>
             <p className="page-subtitle">浏览番剧资源，选择字幕组订阅 RSS</p>
           </div>
-          <div style={{ marginLeft: 16, display: "flex", alignItems: "center", gap: 4 }}>
-            <button style={navBtnStyle} onClick={() => navigate("back")} title="后退">←</button>
-            <button style={navBtnStyle} onClick={() => navigate("forward")} title="前进">→</button>
-            <button style={navBtnStyle} onClick={() => navigate("reload")} title="刷新">↻</button>
-            <button style={{ ...navBtnStyle, fontSize: 16 }} onClick={() => navigate("home")} title="主页">⌂</button>
-          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <button style={navBtnStyle} onClick={() => navigate("back")} title="后退">←</button>
+          <button style={navBtnStyle} onClick={() => navigate("forward")} title="前进">→</button>
+          <button style={navBtnStyle} onClick={() => navigate("reload")} title="刷新">↻</button>
+          <button style={{ ...navBtnStyle, fontSize: 16 }} onClick={() => navigate("home")} title="主页">⌂</button>
           <button
             className="btn btn-primary"
             onClick={handleScanRss}
             disabled={scanning || fetchingEpisodes}
-            style={{ marginLeft: 12, fontSize: 12, padding: "6px 12px" }}
+            style={{ fontSize: 13, padding: "6px 14px", marginLeft: 4 }}
           >
             {scanning ? "扫描中..." : fetchingEpisodes ? "获取中..." : "🔗 抓取 RSS"}
           </button>
         </div>
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          mikanani.me
-        </span>
       </div>
 
       {scanMsg && (
         <div style={{
           marginBottom: 12, padding: "8px 12px", borderRadius: 6, fontSize: 12,
-          background: scanMsg.includes("失败") ? "#fee2e2" : "#dbeafe",
-          color: scanMsg.includes("失败") ? "#991b1b" : "#1e40af",
+          background: scanMsg.includes("失败") ? "var(--toast-error-bg)" : "var(--toast-success-bg)",
+          color: scanMsg.includes("失败") ? "var(--toast-error-text)" : "var(--toast-success-text)",
         }}>
           {scanMsg}
         </div>
@@ -386,7 +385,7 @@ export default function MikanBrowser() {
         ref={containerRef}
         style={{
           flex: 1, borderRadius: "var(--border-radius)", overflow: "hidden",
-          border: "1px solid var(--border-color)", background: "#1a1a2e",
+          border: "1px solid var(--border-color)", background: "#2C2522",
         }}
       />
     </div>

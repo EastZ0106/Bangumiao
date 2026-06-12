@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import PageIllustration from "../components/PageIllustration";
 
 interface Subscription {
   id: string;
@@ -74,11 +75,14 @@ export default function Subscribe() {
   return (
     <div>
       <div className="page-header">
-        <div>
-          <h1 className="page-title">订阅列表</h1>
-          <p className="page-subtitle">管理你的番剧 RSS 订阅</p>
+        <div className="page-header-left">
+          <PageIllustration page="/" />
+          <div>
+            <h1 className="page-title">订阅列表</h1>
+            <p className="page-subtitle">管理你的番剧 RSS 订阅</p>
+          </div>
         </div>
-        <div className="page-actions" style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
           <button className="btn btn-outline" onClick={handleRefresh}>
             刷新全部
           </button>
@@ -106,8 +110,8 @@ export default function Subscribe() {
           {refreshMsg && (
             <div style={{
               marginBottom: 12, padding: "8px 12px", borderRadius: 6, fontSize: 12,
-              background: refreshMsg.includes("失败") ? "#fee2e2" : "#dbeafe",
-              color: refreshMsg.includes("失败") ? "#991b1b" : "#1e40af",
+              background: refreshMsg.includes("失败") ? "var(--toast-error-bg)" : "var(--toast-success-bg)",
+              color: refreshMsg.includes("失败") ? "var(--toast-error-text)" : "var(--toast-success-text)",
             }}>
               {refreshMsg}
             </div>
@@ -122,7 +126,7 @@ export default function Subscribe() {
                   ) : (
                     <span className="badge badge-warning">暂停</span>
                   )}
-                  <span className="badge" style={{ background: sub.auto_download ? "#3b82f6" : "#f59e0b", color: "#fff" }}>
+                  <span className="badge" style={{ background: sub.auto_download ? "var(--color-primary-500)" : "var(--color-warning)", color: "#FFFCF7" }}>
                     {sub.auto_download ? "自动下载" : "手动管理"}
                   </span>
                 </div>

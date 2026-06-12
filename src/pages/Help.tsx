@@ -1,3 +1,5 @@
+import PageIllustration from "../components/PageIllustration";
+
 export default function Help() {
   const sectionStyle: React.CSSProperties = {
     marginBottom: 24,
@@ -27,9 +29,12 @@ export default function Help() {
   return (
     <div style={{ maxWidth: 760 }}>
       <div className="page-header">
-        <div>
-          <h1 className="page-title">帮助</h1>
-          <p className="page-subtitle">bangumiao 用户手册</p>
+        <div className="page-header-left">
+          <PageIllustration page="/help" />
+          <div>
+            <h1 className="page-title">帮助</h1>
+            <p className="page-subtitle">bangumiao 用户手册</p>
+          </div>
         </div>
       </div>
 

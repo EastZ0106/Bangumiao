@@ -55,8 +55,8 @@
 }
 
 .sidebar-link.active {
-  background: var(--color-primary-500);
-  color: #fff;
+  background: var(--color-primary-600);
+  color: #FFFCF7;
 }
 
 .sidebar-icon {

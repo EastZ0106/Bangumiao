@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import PageIllustration from "../components/PageIllustration";
 
 interface AnimeGroup {
   title: string;
@@ -65,9 +66,12 @@ export default function Library() {
   return (
     <div>
       <div className="page-header">
-        <div>
-          <h1 className="page-title">本地番剧</h1>
-          <p className="page-subtitle">管理已下载的番剧，追踪观看进度</p>
+        <div className="page-header-left">
+          <PageIllustration page="/library" />
+          <div>
+            <h1 className="page-title">本地番剧</h1>
+            <p className="page-subtitle">管理已下载的番剧，追踪观看进度</p>
+          </div>
         </div>
         <button className="btn btn-outline" onClick={loadLibrary}>
           重新扫描
@@ -126,7 +130,7 @@ export default function Library() {
                             display: "flex", alignItems: "center", gap: 8,
                             padding: "5px 4px", fontSize: 13,
                             borderBottom: "1px solid var(--border-color)",
-                            background: ep.watched ? "#f0fdf4" : "transparent",
+                            background: ep.watched ? "var(--badge-success-bg)" : "transparent",
                             borderRadius: 4,
                           }}
                         >

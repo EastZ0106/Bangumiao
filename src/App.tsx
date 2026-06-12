@@ -9,6 +9,7 @@ import Help from "./pages/Help";
 import About from "./pages/About";
 import "./styles/theme.css";
 import "./styles/App.css";
+import "./styles/page-illustration.css";
 
 function App() {
   return (

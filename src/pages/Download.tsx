@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import PageIllustration from "../components/PageIllustration";
 
 interface DownloadItem {
   id: string;
@@ -210,8 +211,8 @@ export default function Download() {
         <div style={{
           position: "fixed", top: 16, right: 16, zIndex: 2000,
           padding: "10px 16px", borderRadius: 8, fontSize: 13,
-          background: toast.ok ? "#dbeafe" : "#fee2e2",
-          color: toast.ok ? "#1e40af" : "#991b1b",
+          background: toast.ok ? "var(--toast-success-bg)" : "var(--toast-error-bg)",
+          color: toast.ok ? "var(--toast-success-text)" : "var(--toast-error-text)",
           boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
           maxWidth: 400,
         }}>
@@ -220,21 +221,25 @@ export default function Download() {
       )}
 
       <div className="page-header">
-        <div>
-          <h1 className="page-title">下载管理</h1>
-          <p className="page-subtitle">查看和管理正在下载与已完成的番剧</p>
+        <div className="page-header-left">
+          <PageIllustration page="/downloads" />
+          <div>
+            <h1 className="page-title">下载管理</h1>
+            <p className="page-subtitle">查看和管理正在下载与已完成的番剧</p>
+          </div>
         </div>
-        <button
-          className="btn btn-outline"
-          onClick={handleCleanDir}
-          disabled={cleaning}
-          style={{ marginRight: 8 }}
-        >
-          {cleaning ? "清理中..." : "清理残留文件"}
-        </button>
-        <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>
-          {showForm ? "取消" : "添加下载"}
-        </button>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button
+            className="btn btn-outline"
+            onClick={handleCleanDir}
+            disabled={cleaning}
+          >
+            {cleaning ? "清理中..." : "清理残留文件"}
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>
+            {showForm ? "取消" : "添加下载"}
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -327,7 +332,7 @@ export default function Download() {
                         display: "flex", alignItems: "center", gap: 8,
                         padding: "6px 0", fontSize: 13,
                         borderBottom: "1px solid var(--border-color)",
-                        background: dupNumber ? "#fef3c7" : "transparent",
+                        background: dupNumber ? "var(--badge-warning-bg)" : "transparent",
                         borderRadius: 4,
                       }}>
                         <input

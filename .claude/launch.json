@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "bangumiao-dev",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["tauri", "dev"],
+      "port": 1420
+    }
+  ]
+}
