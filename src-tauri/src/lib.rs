@@ -105,6 +105,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(app_state))
         .setup(|app| {
+            // Start background RSS refresh scheduler
+            let handle = app.handle().clone();
+            crate::scheduler::start_scheduler(handle);
+
             let tray_menu = tauri::menu::MenuBuilder::new(app)
                 .text("show", "打开窗口")
                 .separator()
@@ -142,7 +146,11 @@ pub fn run() {
             commands::rss::remove_subscription,
             commands::rss::toggle_subscription,
             commands::rss::refresh_all_subscriptions,
-            commands::rss::wipe_all_data,
+            commands::rss::update_auto_download,
+        commands::rss::wipe_all_data,
+        commands::download::start_download,
+        commands::download::batch_start_downloads,
+        commands::download::get_pending_episodes,
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::download::get_downloads,

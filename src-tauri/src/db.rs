@@ -73,6 +73,12 @@ impl Database {
             "
         )?;
 
+        // Migration: add auto_download column (safe — ignored if already exists)
+        conn.execute(
+            "ALTER TABLE subscriptions ADD COLUMN auto_download INTEGER DEFAULT 1",
+            [],
+        ).ok();
+
         // Ensure a placeholder subscription exists for manual downloads
         conn.execute(
             "INSERT OR IGNORE INTO subscriptions (id, title, rss_url) VALUES ('manual', '手动下载', 'manual://')",
@@ -85,7 +91,7 @@ impl Database {
     pub fn get_subscriptions(&self) -> Result<Vec<crate::commands::rss::Subscription>, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, title, rss_url, mikan_url, cover_url, enabled, created_at FROM subscriptions ORDER BY created_at DESC"
+            "SELECT id, title, rss_url, mikan_url, cover_url, enabled, auto_download, created_at FROM subscriptions ORDER BY created_at DESC"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(crate::commands::rss::Subscription {
@@ -95,7 +101,8 @@ impl Database {
                 mikan_url: row.get(3)?,
                 cover_url: row.get(4)?,
                 enabled: row.get::<_, i32>(5)? != 0,
-                created_at: row.get(6)?,
+                auto_download: row.get::<_, i32>(6).unwrap_or(1) != 0,
+                created_at: row.get(7)?,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -108,11 +115,12 @@ impl Database {
         rss_url: &str,
         mikan_url: &str,
         cover_url: &str,
+        auto_download: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR IGNORE INTO subscriptions (id, title, rss_url, mikan_url, cover_url) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![id, title, rss_url, mikan_url, cover_url],
+            "INSERT OR IGNORE INTO subscriptions (id, title, rss_url, mikan_url, cover_url, auto_download) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![id, title, rss_url, mikan_url, cover_url, auto_download as i32],
         )?;
         Ok(())
     }
@@ -138,13 +146,13 @@ impl Database {
         Ok(enabled != 0)
     }
 
-    pub fn get_enabled_subscriptions(&self) -> Result<Vec<(String, String, String)>, Box<dyn std::error::Error>> {
+    pub fn get_enabled_subscriptions(&self) -> Result<Vec<(String, String, String, bool)>, Box<dyn std::error::Error>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, title, rss_url FROM subscriptions WHERE enabled = 1"
+            "SELECT id, title, rss_url, auto_download FROM subscriptions WHERE enabled = 1"
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i32>(3).unwrap_or(1) != 0))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -197,5 +205,34 @@ impl Database {
             rusqlite::params![key, value],
         )?;
         Ok(())
+    }
+
+    pub fn update_auto_download(&self, id: &str, auto_download: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE subscriptions SET auto_download = ?1 WHERE id = ?2",
+            rusqlite::params![auto_download as i32, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_subscription_by_id(&self, id: &str) -> Result<Option<crate::commands::rss::Subscription>, Box<dyn std::error::Error>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, rss_url, mikan_url, cover_url, enabled, auto_download, created_at FROM subscriptions WHERE id = ?1"
+        )?;
+        let mut rows = stmt.query_map(rusqlite::params![id], |row| {
+            Ok(crate::commands::rss::Subscription {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                rss_url: row.get(2)?,
+                mikan_url: row.get(3)?,
+                cover_url: row.get(4)?,
+                enabled: row.get::<_, i32>(5)? != 0,
+                auto_download: row.get::<_, i32>(6).unwrap_or(1) != 0,
+                created_at: row.get(7)?,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
     }
 }

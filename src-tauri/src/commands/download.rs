@@ -12,7 +12,16 @@ pub struct DownloadItem {
     pub progress: f64,
     pub file_path: String,
     pub subscription_title: Option<String>,
+    pub subscription_id: Option<String>,
+    pub episode_number: Option<f64>,
     pub gid: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct PendingGroup {
+    pub subscription_title: String,
+    pub subscription_id: String,
+    pub episodes: Vec<DownloadItem>,
 }
 
 #[tauri::command]
@@ -20,7 +29,7 @@ pub fn get_downloads(state: State<'_, Mutex<AppState>>) -> Result<Vec<DownloadIt
     let app = state.lock().map_err(|e| e.to_string())?;
     let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT e.id, e.title, e.status, e.progress, e.file_path, e.gid, s.title
+        "SELECT e.id, e.title, e.status, e.progress, e.file_path, e.gid, s.title, e.subscription_id, e.episode_number
          FROM episodes e
          LEFT JOIN subscriptions s ON e.subscription_id = s.id
          ORDER BY e.created_at DESC"
@@ -35,6 +44,8 @@ pub fn get_downloads(state: State<'_, Mutex<AppState>>) -> Result<Vec<DownloadIt
             file_path: row.get::<_, String>(4)?,
             gid: row.get::<_, String>(5)?,
             subscription_title: row.get::<_, Option<String>>(6)?,
+            subscription_id: row.get::<_, Option<String>>(7)?,
+            episode_number: row.get::<_, Option<f64>>(8)?,
         })
     }).map_err(|e| e.to_string())?;
 
@@ -292,7 +303,7 @@ pub fn add_torrent_download(
         let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("INSERT INTO episodes (id,subscription_id,title,torrent_url,status,gid,progress) VALUES (?1,'manual',?2,?3,'active',?4,0)", rusqlite::params![id,title,torrent_url,gid]).map_err(|e| e.to_string())?;
     }
-    Ok(DownloadItem { id, episode_title: title, status: "active".into(), progress: 0.0, file_path: String::new(), subscription_title: None, gid })
+    Ok(DownloadItem { id, episode_title: title, status: "active".into(), progress: 0.0, file_path: String::new(), subscription_title: None, subscription_id: Some("manual".into()), episode_number: None, gid })
 }
 
 #[tauri::command]
@@ -327,12 +338,192 @@ fn clean_dir_recursive(dir: &std::path::Path, cleaned: &mut Vec<String>, active_
         let name = entry.file_name().to_string_lossy().to_string();
         if path.is_dir() {
             clean_dir_recursive(&path, cleaned, active_gids);
-        } else if name.ends_with(".torrent") || name.ends_with(".torrent.aria2") || name.ends_with(".aria2") {
-            // Skip files belonging to active/paused/pending downloads
-            let stem = name.replace(".torrent.aria2", "").replace(".torrent", "").replace(".aria2", "");
+        } else if name.ends_with(".torrent") || name.ends_with(".torrent.aria2") {
+            // Skip files belonging to active/paused/pending downloads (stem = aria2 GID)
+            let stem = name.replace(".torrent.aria2", "").replace(".torrent", "");
             if active_gids.iter().any(|g| g == &stem) { continue; }
             let _ = std::fs::remove_file(&path);
             cleaned.push(format!("{}/{}", dir.file_name().unwrap_or_default().to_string_lossy(), name));
+        } else if name.ends_with(".aria2") {
+            // .aria2 control files belong to in-progress downloads. They're named
+            // after the video file (not GID), so we can't match by GID. Only clean
+            // orphaned ones — we do this by checking if ANY active gid exists; if
+            // aria2 is running, skip all .aria2 files to be safe. Otherwise clean.
+            if active_gids.is_empty() {
+                let _ = std::fs::remove_file(&path);
+                cleaned.push(format!("{}/{}", dir.file_name().unwrap_or_default().to_string_lossy(), name));
+            }
         }
     }
+}
+
+/// Start download for a single pending episode
+#[tauri::command]
+pub fn start_download(
+    state: State<'_, Mutex<AppState>>,
+    episode_id: String,
+) -> Result<String, String> {
+    let app = state.lock().map_err(|e| e.to_string())?;
+    let (torrent_url, magnet_uri, subscription_title) = {
+        let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT torrent_url, magnet_uri, IFNULL((SELECT s.title FROM subscriptions s WHERE s.id = e.subscription_id), '') FROM episodes e WHERE e.id = ?1",
+            rusqlite::params![&episode_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+        ).map_err(|e| format!("Episode not found: {}", e))?
+    };
+
+    let base_dir = app.base_download_dir.clone();
+    let safe_name = crate::commands::rss::sanitize_dir_name(&subscription_title);
+    let sub_dir = base_dir.join(&safe_name);
+    std::fs::create_dir_all(&sub_dir).ok();
+
+    let aria2 = app.aria2.lock().map_err(|e| e.to_string())?;
+    let gid = if !torrent_url.is_empty() {
+        aria2.add_torrent_with_dir(&torrent_url, &sub_dir.to_string_lossy())
+    } else if !magnet_uri.is_empty() {
+        aria2.add_uri_with_dir(&magnet_uri, &sub_dir.to_string_lossy())
+    } else {
+        return Err("No torrent URL or magnet URI available".to_string());
+    }.map_err(|e| e.to_string())?;
+
+    if gid.is_empty() {
+        return Err("aria2 returned empty GID".into());
+    }
+
+    drop(aria2);
+    let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE episodes SET status = 'active', gid = ?1 WHERE id = ?2",
+        rusqlite::params![&gid, &episode_id],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(gid)
+}
+
+/// Batch start downloads for multiple pending episodes
+#[tauri::command]
+pub fn batch_start_downloads(
+    state: State<'_, Mutex<AppState>>,
+    episode_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let mut started: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    for id in &episode_ids {
+        let (torrent_url, magnet_uri, subscription_title) = {
+            let app = match state.lock() {
+                Ok(a) => a,
+                Err(e) => { errors.push(format!("{}: lock error {}", id, e)); continue; }
+            };
+            let conn = match app.db.conn.lock() {
+                Ok(c) => c,
+                Err(e) => { errors.push(format!("{}: lock error {}", id, e)); continue; }
+            };
+            match conn.query_row(
+                "SELECT torrent_url, magnet_uri, IFNULL((SELECT s.title FROM subscriptions s WHERE s.id = e.subscription_id), '') FROM episodes e WHERE e.id = ?1",
+                rusqlite::params![id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+            ) {
+                Ok(v) => v,
+                Err(e) => { errors.push(format!("{}: {}", id, e)); continue; }
+            }
+        };
+
+        let base_dir = {
+            let app = state.lock().map_err(|e| e.to_string())?;
+            app.base_download_dir.clone()
+        };
+        let safe_name = crate::commands::rss::sanitize_dir_name(&subscription_title);
+        let sub_dir = base_dir.join(&safe_name);
+        std::fs::create_dir_all(&sub_dir).ok();
+
+        let gid = {
+            let app = state.lock().map_err(|e| e.to_string())?;
+            let aria2 = app.aria2.lock().map_err(|e| e.to_string())?;
+            let r = if !torrent_url.is_empty() {
+                aria2.add_torrent_with_dir(&torrent_url, &sub_dir.to_string_lossy())
+            } else if !magnet_uri.is_empty() {
+                aria2.add_uri_with_dir(&magnet_uri, &sub_dir.to_string_lossy())
+            } else {
+                Err("No torrent URL or magnet URI".into())
+            };
+            match r {
+                Ok(g) if !g.is_empty() => g,
+                Ok(_) => { errors.push(format!("{}: empty GID", id)); continue; }
+                Err(e) => { errors.push(format!("{}: {}", id, e)); continue; }
+            }
+        };
+
+        {
+            let app = state.lock().map_err(|e| e.to_string())?;
+            let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE episodes SET status = 'active', gid = ?1 WHERE id = ?2",
+                rusqlite::params![&gid, id],
+            ).ok();
+        }
+        started.push(gid);
+    }
+
+    if started.is_empty() && !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    Ok(started)
+}
+
+/// Get pending episodes grouped by subscription
+#[tauri::command]
+pub fn get_pending_episodes(state: State<'_, Mutex<AppState>>) -> Result<Vec<PendingGroup>, String> {
+    let app = state.lock().map_err(|e| e.to_string())?;
+    let conn = app.db.conn.lock().map_err(|e| e.to_string())?;
+
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.title, e.status, e.progress, e.file_path, e.gid, s.title, e.subscription_id, e.episode_number
+         FROM episodes e
+         LEFT JOIN subscriptions s ON e.subscription_id = s.id
+         WHERE e.status = 'pending'
+         ORDER BY s.title, e.episode_number DESC"
+    ).map_err(|e| e.to_string())?;
+
+    let items: Vec<DownloadItem> = stmt.query_map([], |row| {
+        Ok(DownloadItem {
+            id: row.get::<_, String>(0)?,
+            episode_title: row.get::<_, String>(1)?,
+            status: row.get::<_, String>(2)?,
+            progress: row.get::<_, f64>(3)?,
+            file_path: row.get::<_, String>(4)?,
+            gid: row.get::<_, String>(5)?,
+            subscription_title: row.get::<_, Option<String>>(6)?,
+            subscription_id: row.get::<_, Option<String>>(7)?,
+            episode_number: row.get::<_, Option<f64>>(8)?,
+        })
+    }).map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok()).collect();
+
+    // Group by subscription_title
+    let mut groups: Vec<PendingGroup> = Vec::new();
+    let mut current_key: Option<String> = None;
+    let mut current_eps: Vec<DownloadItem> = Vec::new();
+
+    for item in items {
+        let key = item.subscription_title.clone().unwrap_or_default();
+        if Some(&key) != current_key.as_ref() {
+            if !current_eps.is_empty() {
+                let prev_key = current_key.take().unwrap_or_default();
+                let sub_id = current_eps.first().and_then(|e| e.subscription_id.clone()).unwrap_or_default();
+                groups.push(PendingGroup { subscription_title: prev_key, subscription_id: sub_id, episodes: current_eps });
+                current_eps = Vec::new();
+            }
+            current_key = Some(key);
+        }
+        current_eps.push(item);
+    }
+    if !current_eps.is_empty() {
+        let key = current_key.unwrap_or_default();
+        let sub_id = current_eps.first().and_then(|e| e.subscription_id.clone()).unwrap_or_default();
+        groups.push(PendingGroup { subscription_title: key, subscription_id: sub_id, episodes: current_eps });
+    }
+
+    Ok(groups)
 }

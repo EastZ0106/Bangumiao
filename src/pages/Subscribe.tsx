@@ -9,6 +9,7 @@ interface Subscription {
   mikan_url: string;
   cover_url: string;
   enabled: boolean;
+  auto_download: boolean;
   created_at: string;
 }
 
@@ -18,6 +19,7 @@ export default function Subscribe() {
   const [loading, setLoading] = useState(true);
 
   const [refreshMsg, setRefreshMsg] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const loadSubs = useCallback(async () => {
     try {
@@ -48,6 +50,14 @@ export default function Subscribe() {
     }
   };
 
+  const handleToggleMode = async (subId: string, autoDownload: boolean) => {
+    try {
+      await invoke("update_auto_download", { id: subId, autoDownload });
+      await loadSubs();
+    } catch (e) {
+      console.error("Failed to update mode:", e);
+    }
+  };
   const handleWipe = async () => {
     if (!confirm("确定要清除所有订阅和剧集记录吗？此操作不可撤销。")) return;
     try {
@@ -104,15 +114,39 @@ export default function Subscribe() {
           )}
           <div className="card-grid">
             {subs.map((sub) => (
-              <div className="card" key={sub.id}>
+              <div className="card" key={sub.id} onClick={() => setExpandedId(expandedId === sub.id ? null : sub.id)} style={{ cursor: "pointer" }}>
                 <h3 style={{ fontSize: 15, marginBottom: 8 }}>{sub.title}</h3>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {sub.enabled ? (
                     <span className="badge badge-success">启用</span>
                   ) : (
                     <span className="badge badge-warning">暂停</span>
                   )}
+                  <span className="badge" style={{ background: sub.auto_download ? "#3b82f6" : "#f59e0b", color: "#fff" }}>
+                    {sub.auto_download ? "自动下载" : "手动管理"}
+                  </span>
                 </div>
+                {expandedId === sub.id && (
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border-color)" }} onClick={(e) => e.stopPropagation()}>
+                    <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>下载模式</div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        className={`btn ${sub.auto_download ? "btn-primary" : "btn-ghost"}`}
+                        style={{ fontSize: 12, padding: "4px 12px" }}
+                        onClick={() => handleToggleMode(sub.id, true)}
+                      >
+                        自动下载
+                      </button>
+                      <button
+                        className={`btn ${!sub.auto_download ? "btn-primary" : "btn-ghost"}`}
+                        style={{ fontSize: 12, padding: "4px 12px" }}
+                        onClick={() => handleToggleMode(sub.id, false)}
+                      >
+                        手动管理
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

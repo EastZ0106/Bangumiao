@@ -8,6 +8,15 @@ interface DownloadItem {
   progress: number;
   file_path: string;
   subscription_title?: string;
+  subscription_id?: string;
+  episode_number?: number;
+  gid?: string;
+}
+
+interface PendingGroup {
+  subscription_title: string;
+  subscription_id: string;
+  episodes: DownloadItem[];
 }
 
 export default function Download() {
@@ -20,6 +29,12 @@ export default function Download() {
   const [cleaning, setCleaning] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Pending state
+  const [pendingGroups, setPendingGroups] = useState<PendingGroup[]>([]);
+  const [showPending, setShowPending] = useState(true);
+  const [selectedEpisodes, setSelectedEpisodes] = useState<Set<string>>(new Set());
+  const [batchStarting, setBatchStarting] = useState(false);
+
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
   const showToast = (text: string, ok: boolean) => {
     setToast({ text, ok });
@@ -29,11 +44,20 @@ export default function Download() {
   const loadDownloads = useCallback(async () => {
     try {
       const data = await invoke<DownloadItem[]>("get_downloads");
-      setItems(data);
+      setItems(data.filter(d => d.status !== "pending"));
       setLoading(false);
     } catch (e) {
       console.error("Failed to load downloads:", e);
       setLoading(false);
+    }
+  }, []);
+
+  const loadPending = useCallback(async () => {
+    try {
+      const groups = await invoke<PendingGroup[]>("get_pending_episodes");
+      setPendingGroups(groups);
+    } catch (e) {
+      console.error("Failed to load pending:", e);
     }
   }, []);
 
@@ -47,6 +71,7 @@ export default function Download() {
 
   useEffect(() => {
     loadDownloads();
+    loadPending();
 
     const startPolling = () => {
       if (pollingRef.current) return;
@@ -72,7 +97,7 @@ export default function Download() {
       stopPolling();
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [loadDownloads, pollProgress]);
+  }, [loadDownloads, pollProgress, loadPending]);
 
   const handlePause = async (id: string) => {
     try { await invoke("pause_download", { id }); loadDownloads(); } catch (e) { console.error(e); }
@@ -83,7 +108,7 @@ export default function Download() {
   };
 
   const handleRemove = async (id: string) => {
-    try { await invoke("remove_download", { id }); loadDownloads(); } catch (e) { console.error(e); }
+    try { await invoke("remove_download", { id }); loadDownloads(); loadPending(); } catch (e) { console.error(e); }
   };
 
   const handleCleanDir = async () => {
@@ -113,6 +138,56 @@ export default function Download() {
       showToast("添加失败: " + String(e), false);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedEpisodes(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    const allIds = pendingGroups.flatMap(g => g.episodes.map(e => e.id));
+    if (allIds.length > 0 && allIds.every(id => selectedEpisodes.has(id))) {
+      setSelectedEpisodes(new Set());
+    } else {
+      setSelectedEpisodes(new Set(allIds));
+    }
+  };
+
+  const handleStartSelected = async () => {
+    if (selectedEpisodes.size === 0) return;
+    setBatchStarting(true);
+    try {
+      const ids = Array.from(selectedEpisodes);
+      await invoke("batch_start_downloads", { episodeIds: ids });
+      showToast(`已开始 ${ids.length} 个下载任务`, true);
+      setSelectedEpisodes(new Set());
+      loadPending();
+      loadDownloads();
+    } catch (e) {
+      showToast("启动下载失败: " + String(e), false);
+    } finally {
+      setBatchStarting(false);
+    }
+  };
+
+  const handleStartSingle = async (id: string) => {
+    try {
+      await invoke("start_download", { episodeId: id });
+      showToast("下载已开始", true);
+      setSelectedEpisodes(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      loadPending();
+      loadDownloads();
+    } catch (e) {
+      showToast("启动下载失败: " + String(e), false);
     }
   };
 
@@ -195,6 +270,95 @@ export default function Download() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* ── Pending episodes section ── */}
+      {pendingGroups.length > 0 && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, marginTop: 8 }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setShowPending(!showPending)}
+              style={{ fontSize: 13, fontWeight: 600 }}
+            >
+              {showPending ? "▾" : "▸"} 待处理 ({pendingGroups.flatMap(g => g.episodes).length})
+            </button>
+            {showPending && (
+              <>
+                <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={toggleSelectAll}>
+                  {(() => {
+                    const allIds = pendingGroups.flatMap(g => g.episodes.map(e => e.id));
+                    return allIds.length > 0 && allIds.every(id => selectedEpisodes.has(id)) ? "取消全选" : "全选";
+                  })()}
+                </button>
+                <button
+                  className="btn btn-primary"
+                  disabled={selectedEpisodes.size === 0 || batchStarting}
+                  onClick={handleStartSelected}
+                  style={{ fontSize: 12, padding: "4px 14px" }}
+                >
+                  {batchStarting ? "启动中..." : `下载选中 (${selectedEpisodes.size})`}
+                </button>
+              </>
+            )}
+          </div>
+
+          {showPending && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
+              {pendingGroups.map((group) => (
+                <div key={group.subscription_id} style={{
+                  borderRadius: 10, border: "1px solid var(--border-color)",
+                  background: "var(--bg-card)", padding: "12px 16px",
+                }}>
+                  <div style={{
+                    fontWeight: 600, fontSize: 14, marginBottom: 8,
+                    paddingBottom: 6, borderBottom: "1px solid var(--border-color)",
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                  }}>
+                    <span>{group.subscription_title}</span>
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      {group.episodes.length} 集
+                    </span>
+                  </div>
+                  {group.episodes.map((ep) => {
+                    const dupNumber = group.episodes.filter(e => e.episode_number != null && e.episode_number === ep.episode_number).length > 1;
+                    return (
+                      <div key={ep.id} style={{
+                        display: "flex", alignItems: "center", gap: 8,
+                        padding: "6px 0", fontSize: 13,
+                        borderBottom: "1px solid var(--border-color)",
+                        background: dupNumber ? "#fef3c7" : "transparent",
+                        borderRadius: 4,
+                      }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedEpisodes.has(ep.id)}
+                          onChange={() => toggleSelect(ep.id)}
+                          style={{ cursor: "pointer", flexShrink: 0 }}
+                        />
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {ep.episode_number != null && (
+                            <span style={{ color: "var(--text-muted)", marginRight: 6, fontSize: 11 }}>
+                              第{ep.episode_number % 1 === 0 ? ep.episode_number : ep.episode_number.toFixed(1)}话
+                            </span>
+                          )}
+                          {ep.episode_title}
+                        </span>
+                        <button
+                          className="btn btn-ghost"
+                          style={{ fontSize: 11, padding: "2px 8px", flexShrink: 0 }}
+                          onClick={() => handleStartSingle(ep.id)}
+                        >
+                          立即下载
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {loading ? (

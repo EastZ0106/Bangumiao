@@ -13,6 +13,7 @@ pub struct Subscription {
     pub mikan_url: String,
     pub cover_url: String,
     pub enabled: bool,
+    pub auto_download: bool,
     pub created_at: String,
 }
 
@@ -54,11 +55,12 @@ pub fn add_subscription(
     rss_url: String,
     title: String,
     mikan_url: String,
+    auto_download: bool,
 ) -> Result<Subscription, String> {
     let app = state.lock().map_err(|e| e.to_string())?;
     let id = uuid::Uuid::new_v4().to_string();
     app.db
-        .insert_subscription(&id, &title, &rss_url, &mikan_url, "")
+        .insert_subscription(&id, &title, &rss_url, &mikan_url, "", auto_download)
         .map_err(|e| e.to_string())?;
 
     Ok(Subscription {
@@ -68,6 +70,7 @@ pub fn add_subscription(
         mikan_url,
         cover_url: String::new(),
         enabled: true,
+        auto_download,
         created_at: chrono::Utc::now().to_rfc3339(),
     })
 }
@@ -90,7 +93,7 @@ pub fn refresh_all_subscriptions(state: State<'_, Mutex<AppState>>) -> Result<Re
     let subs: Vec<_> = app.db.get_enabled_subscriptions()
         .map_err(|e| e.to_string())?
         .into_iter()
-        .filter(|(id, _, rss_url)| *id != "manual" && !rss_url.starts_with("manual://"))
+        .filter(|(id, _, rss_url, _)| *id != "manual" && !rss_url.starts_with("manual://"))
         .collect();
     let mut known_titles = app.db.get_all_episode_titles().map_err(|e| e.to_string())?;
 
@@ -98,7 +101,7 @@ pub fn refresh_all_subscriptions(state: State<'_, Mutex<AppState>>) -> Result<Re
     let mut total_started = 0u32;
 
     for sub in subs {
-        let (_sub_id, sub_title, rss_url) = (&sub.0, &sub.1, &sub.2);
+        let (_sub_id, sub_title, rss_url, auto_download) = (&sub.0, &sub.1, &sub.2, sub.3);
 
         // Ensure per-subscription sub-directory exists
         let base_dir = app.base_download_dir.clone();
@@ -118,7 +121,7 @@ pub fn refresh_all_subscriptions(state: State<'_, Mutex<AppState>>) -> Result<Re
             total_new += 1;
 
             // Scope: keep aria2 lock short so we don't deadlock with DB
-            let gid: Option<String> = {
+            let gid: Option<String> = if auto_download {
                 let aria2 = app.aria2.lock().map_err(|e| e.to_string())?;
                 if !ep.torrent_url.is_empty() || !ep.magnet_uri.is_empty() {
                     let result = if !ep.torrent_url.is_empty() {
@@ -136,6 +139,8 @@ pub fn refresh_all_subscriptions(state: State<'_, Mutex<AppState>>) -> Result<Re
                 } else {
                     None
                 }
+            } else {
+                None
             };
 
             // Insert episode into DB
@@ -159,7 +164,18 @@ pub fn refresh_all_subscriptions(state: State<'_, Mutex<AppState>>) -> Result<Re
     Ok(RefreshResult { new_episodes: total_new, started_downloads: total_started })
 }
 
-fn sanitize_dir_name(name: &str) -> String {
+#[tauri::command]
+pub fn update_auto_download(
+    state: State<'_, Mutex<AppState>>,
+    id: String,
+    auto_download: bool,
+) -> Result<(), String> {
+    let app = state.lock().map_err(|e| e.to_string())?;
+    app.db.update_auto_download(&id, auto_download)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn sanitize_dir_name(name: &str) -> String {
     let mut s = String::new();
     for ch in name.chars() {
         let c = ch as u32;

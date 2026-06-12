@@ -98,6 +98,7 @@ export default function MikanBrowser() {
   const [selectedSubgroup, setSelectedSubgroup] = useState<SubgroupInfo | null>(null);
   const [fetchingEpisodes, setFetchingEpisodes] = useState(false);
   const [subscribing, setSubscribing] = useState(false);
+  const [downloadMode, setDownloadMode] = useState<"auto" | "pending">("auto");
 
   // Close webview whenever ANY modal opens; reopen when all modals close
   const isAnyModalOpen = showSubgroupModal || showEpisodeModal;
@@ -166,13 +167,19 @@ export default function MikanBrowser() {
         rssUrl,
         title: selectedSubgroup.anime_title + " - " + selectedSubgroup.subgroup_name,
         mikanUrl: "https://mikanani.me/Home/Bangumi/" + selectedSubgroup.bangumi_id,
+        autoDownload: downloadMode === "auto",
       });
       setShowEpisodeModal(false);
-      setScanMsg(`已订阅: ${selectedSubgroup.anime_title} [${selectedSubgroup.subgroup_name}]，正在拉取 RSS...`);
+      const modeLabel = downloadMode === "auto" ? "自动下载" : "手动管理";
+      setScanMsg(`已订阅(${modeLabel}): ${selectedSubgroup.anime_title} [${selectedSubgroup.subgroup_name}]，正在拉取 RSS...`);
       // Automatically trigger a refresh so episodes get pulled in immediately
       try {
         const r = await invoke<{ new_episodes: number; started_downloads: number }>("refresh_all_subscriptions");
-        setScanMsg(`已订阅 · 新增 ${r.new_episodes} 集，开始下载 ${r.started_downloads} 个`);
+        if (downloadMode === "auto") {
+          setScanMsg(`已订阅 · 新增 ${r.new_episodes} 集，开始下载 ${r.started_downloads} 个`);
+        } else {
+          setScanMsg(`已订阅(手动管理) · 新增 ${r.new_episodes} 集，可在下载管理中手动选择下载`);
+        }
       } catch {
         setScanMsg(`已订阅: ${selectedSubgroup.anime_title} [${selectedSubgroup.subgroup_name}]`);
       }
@@ -331,6 +338,23 @@ export default function MikanBrowser() {
                   </span>
                 </div>
               ))}
+            </div>
+
+            {/* Download mode selector */}
+            <div style={{
+              display: "flex", alignItems: "center", gap: 12,
+              padding: "10px 14px", borderRadius: 8,
+              background: "var(--bg-sidebar)", marginBottom: 16,
+            }}>
+              <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>下载模式:</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 12 }}>
+                <input type="radio" name="downloadMode" checked={downloadMode === "auto"} onChange={() => setDownloadMode("auto")} />
+                自动下载
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 12 }}>
+                <input type="radio" name="downloadMode" checked={downloadMode === "pending"} onChange={() => setDownloadMode("pending")} />
+                手动管理
+              </label>
             </div>
 
             {/* Action buttons */}
