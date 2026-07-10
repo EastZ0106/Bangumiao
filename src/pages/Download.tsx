@@ -1,24 +1,15 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import PageIllustration from "../components/PageIllustration";
+import Toast from "../components/Toast";
+import ConfirmDialog from "../components/ConfirmDialog";
+import { useToast } from "../hooks/useToast";
+import { useConfirm } from "../hooks/useConfirm";
+import type { DownloadItem, PendingGroup } from "../types";
+import { formatEpisodeNumber } from "../utils/format";
 
-interface DownloadItem {
-  id: string;
-  episode_title: string;
-  status: string;
-  progress: number;
-  file_path: string;
-  subscription_title?: string;
-  subscription_id?: string;
-  episode_number?: number;
-  gid?: string;
-}
-
-interface PendingGroup {
-  subscription_title: string;
-  subscription_id: string;
-  episodes: DownloadItem[];
-}
+const ACTIVE_POLL_DELAY = 2000;
+const IDLE_POLL_DELAY = 10000;
 
 export default function Download() {
   const [items, setItems] = useState<DownloadItem[]>([]);
@@ -28,7 +19,7 @@ export default function Download() {
   const [torrentTitle, setTorrentTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [cleaning, setCleaning] = useState(false);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Pending state
   const [pendingGroups, setPendingGroups] = useState<PendingGroup[]>([]);
@@ -36,22 +27,29 @@ export default function Download() {
   const [selectedEpisodes, setSelectedEpisodes] = useState<Set<string>>(new Set());
   const [batchStarting, setBatchStarting] = useState(false);
 
-  const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
-  const showToast = (text: string, ok: boolean) => {
-    setToast({ text, ok });
-    setTimeout(() => setToast(null), 4000);
-  };
+  const { toast, showToast } = useToast();
+  const { request, askConfirm, resolveConfirm } = useConfirm();
+  const pendingEpisodeIds = useMemo(
+    () => pendingGroups.flatMap(g => g.episodes.map(e => e.id)),
+    [pendingGroups],
+  );
+  const allPendingSelected = pendingEpisodeIds.length > 0
+    && pendingEpisodeIds.every(id => selectedEpisodes.has(id));
+
+  const applyDownloads = useCallback((data: DownloadItem[]) => {
+    setItems(data.filter(d => d.status !== "pending"));
+  }, []);
 
   const loadDownloads = useCallback(async () => {
     try {
       const data = await invoke<DownloadItem[]>("get_downloads");
-      setItems(data.filter(d => d.status !== "pending"));
+      applyDownloads(data);
       setLoading(false);
     } catch (e) {
       console.error("Failed to load downloads:", e);
       setLoading(false);
     }
-  }, []);
+  }, [applyDownloads]);
 
   const loadPending = useCallback(async () => {
     try {
@@ -62,22 +60,39 @@ export default function Download() {
     }
   }, []);
 
-  const pollProgress = useCallback(async () => {
+  const pollProgress = useCallback(async (): Promise<boolean> => {
     try {
       await invoke<string>("sync_downloads");
       const data = await invoke<DownloadItem[]>("get_downloads");
-      setItems(data);
-    } catch (e) { console.error(e); }
-  }, []);
+      applyDownloads(data);
+      await loadPending();
+      return data.some(d => d.status === "active" || d.status === "downloading");
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }, [applyDownloads, loadPending]);
 
   useEffect(() => {
     loadDownloads();
     loadPending();
 
+    let disposed = false;
+
+    const tick = async () => {
+      pollingRef.current = null;
+      const hasActiveDownloads = await pollProgress();
+      if (!disposed && document.visibilityState === "visible") {
+        pollingRef.current = setTimeout(
+          tick,
+          hasActiveDownloads ? ACTIVE_POLL_DELAY : IDLE_POLL_DELAY,
+        );
+      }
+    };
+
     const startPolling = () => {
-      if (pollingRef.current) return;
-      pollProgress();
-      pollingRef.current = setInterval(pollProgress, 2000);
+      if (pollingRef.current || disposed) return;
+      pollingRef.current = setTimeout(tick, 0);
     };
 
     const stopPolling = () => {
@@ -95,25 +110,56 @@ export default function Download() {
     startPolling();
     document.addEventListener("visibilitychange", handleVisibility);
     return () => {
+      disposed = true;
       stopPolling();
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [loadDownloads, pollProgress, loadPending]);
 
   const handlePause = async (id: string) => {
-    try { await invoke("pause_download", { id }); loadDownloads(); } catch (e) { console.error(e); }
+    try {
+      await invoke("pause_download", { id });
+      loadDownloads();
+    } catch (e) {
+      showToast("暂停失败: " + String(e), false);
+    }
   };
 
   const handleResume = async (id: string) => {
-    try { await invoke("resume_download", { id }); loadDownloads(); } catch (e) { console.error(e); }
+    try {
+      await invoke("resume_download", { id });
+      loadDownloads();
+    } catch (e) {
+      showToast("恢复失败: " + String(e), false);
+    }
   };
 
   const handleRemove = async (id: string) => {
-    try { await invoke("remove_download", { id }); loadDownloads(); loadPending(); } catch (e) { console.error(e); }
+    const confirmed = await askConfirm({
+      title: "删除下载任务",
+      message: "确定要删除这个下载任务吗？\n已下载的视频文件也会被删除。",
+      confirmLabel: "删除",
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await invoke("remove_download", { id });
+      showToast("下载任务已删除", true);
+      loadDownloads();
+      loadPending();
+    } catch (e) {
+      showToast("删除失败: " + String(e), false);
+    }
   };
 
   const handleCleanDir = async () => {
-    if (!confirm("确定要清理所有 .torrent 和 .aria2 残留文件吗？\n\n此操作会递归清理下载目录及所有子目录中的中间文件，不会删除已下载的视频。")) return;
+    const confirmed = await askConfirm({
+      title: "清理残留文件",
+      message: "确定要清理所有 .torrent 和 .aria2 残留文件吗？\n此操作不会删除已下载的视频。",
+      confirmLabel: "清理",
+      danger: true,
+    });
+    if (!confirmed) return;
     setCleaning(true);
     try {
       const msg = await invoke<string>("clean_download_dir");
@@ -151,11 +197,10 @@ export default function Download() {
   };
 
   const toggleSelectAll = () => {
-    const allIds = pendingGroups.flatMap(g => g.episodes.map(e => e.id));
-    if (allIds.length > 0 && allIds.every(id => selectedEpisodes.has(id))) {
+    if (allPendingSelected) {
       setSelectedEpisodes(new Set());
     } else {
-      setSelectedEpisodes(new Set(allIds));
+      setSelectedEpisodes(new Set(pendingEpisodeIds));
     }
   };
 
@@ -206,19 +251,8 @@ export default function Download() {
 
   return (
     <div>
-      {/* ── Toast ── */}
-      {toast && (
-        <div style={{
-          position: "fixed", top: 16, right: 16, zIndex: 2000,
-          padding: "10px 16px", borderRadius: 8, fontSize: 13,
-          background: toast.ok ? "var(--toast-success-bg)" : "var(--toast-error-bg)",
-          color: toast.ok ? "var(--toast-success-text)" : "var(--toast-error-text)",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-          maxWidth: 400,
-        }}>
-          {toast.ok ? "✓ " : "✗ "}{toast.text}
-        </div>
-      )}
+      <Toast toast={toast} />
+      <ConfirmDialog request={request} onResolve={resolveConfirm} />
 
       <div className="page-header">
         <div className="page-header-left">
@@ -291,10 +325,7 @@ export default function Download() {
             {showPending && (
               <>
                 <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={toggleSelectAll}>
-                  {(() => {
-                    const allIds = pendingGroups.flatMap(g => g.episodes.map(e => e.id));
-                    return allIds.length > 0 && allIds.every(id => selectedEpisodes.has(id)) ? "取消全选" : "全选";
-                  })()}
+                  {allPendingSelected ? "取消全选" : "全选"}
                 </button>
                 <button
                   className="btn btn-primary"
@@ -344,7 +375,7 @@ export default function Download() {
                         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {ep.episode_number != null && (
                             <span style={{ color: "var(--text-muted)", marginRight: 6, fontSize: 11 }}>
-                              第{ep.episode_number % 1 === 0 ? ep.episode_number : ep.episode_number.toFixed(1)}话
+                              第{formatEpisodeNumber(ep.episode_number)}话
                             </span>
                           )}
                           {ep.episode_title}

@@ -2,6 +2,16 @@ use quick_xml::de::from_str;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashSet;
+use std::sync::LazyLock;
+
+static EPISODE_PATTERNS: LazyLock<[regex_lite::Regex; 4]> = LazyLock::new(|| {
+    [
+        regex_lite::Regex::new(r"第\s*(\d+(?:\.\d+)?)\s*[话話]").expect("valid episode regex"),
+        regex_lite::Regex::new(r"[Ee][Pp]?\s*(\d+(?:\.\d+)?)").expect("valid episode regex"),
+        regex_lite::Regex::new(r"#\s*(\d+(?:\.\d+)?)").expect("valid episode regex"),
+        regex_lite::Regex::new(r"-\s*(\d+(?:\.\d+)?)\s*(?:\[|$)").expect("valid episode regex"),
+    ]
+});
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename = "rss")]
@@ -51,10 +61,7 @@ pub fn parse_rss(xml: &str) -> Result<RssFeed, Box<dyn std::error::Error>> {
     Ok(feed)
 }
 
-pub fn extract_new_episodes(
-    feed: &RssFeed,
-    seen_titles: &HashSet<String>,
-) -> Vec<EpisodeInfo> {
+pub fn extract_new_episodes(feed: &RssFeed, seen_titles: &HashSet<String>) -> Vec<EpisodeInfo> {
     feed.channel
         .items
         .iter()
@@ -87,15 +94,7 @@ fn extract_magnet(link: &str) -> String {
 }
 
 pub fn extract_episode_number(title: &str) -> Option<f64> {
-    // Patterns like: 第01话, 第1話, ep01, EP01, #01, - 01, etc.
-    let patterns = [
-        regex_lite::Regex::new(r"第\s*(\d+(?:\.\d+)?)\s*[话話]"),
-        regex_lite::Regex::new(r"[Ee][Pp]?\s*(\d+(?:\.\d+)?)"),
-        regex_lite::Regex::new(r"#\s*(\d+(?:\.\d+)?)"),
-        regex_lite::Regex::new(r"-\s*(\d+(?:\.\d+)?)\s*(?:\[|$)"),
-    ];
-
-    for re in patterns.iter().flatten() {
+    for re in EPISODE_PATTERNS.iter() {
         if let Some(caps) = re.captures(title) {
             if let Some(m) = caps.get(1) {
                 if let Ok(n) = m.as_str().parse::<f64>() {

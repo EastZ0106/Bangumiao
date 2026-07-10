@@ -1,30 +1,32 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import PageIllustration from "../components/PageIllustration";
+import Toast from "../components/Toast";
+import { useToast } from "../hooks/useToast";
 
 export default function About() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [logs, setLogs] = useState("");
   const [sending, setSending] = useState(false);
-  const [msg, setMsg] = useState("");
+  const { toast, showToast, clearToast } = useToast();
 
   const handleSubmit = async () => {
     if (!description.trim()) {
-      setMsg("请填写问题描述");
+      showToast("请填写问题描述", false);
       return;
     }
     setSending(true);
-    setMsg("");
+    clearToast();
     try {
       await invoke("send_feedback", {
         name: name.trim() || "匿名用户",
         description: description.trim(),
         logs: logs.trim(),
       });
-      setMsg("已打开默认邮件客户端，请发送邮件完成反馈。感谢！");
+      showToast("已打开默认邮件客户端，请发送邮件完成反馈。感谢！", true);
     } catch (e) {
-      setMsg("发送失败: " + String(e));
+      showToast("发送失败: " + String(e), false);
     } finally {
       setSending(false);
     }
@@ -48,6 +50,7 @@ export default function About() {
 
   return (
     <div style={{ maxWidth: 620 }}>
+      <Toast toast={toast} />
       <div className="page-header">
         <div className="page-header-left">
           <PageIllustration page="/about" />
@@ -56,7 +59,7 @@ export default function About() {
             <p className="page-subtitle">bangumiao — 追番桌面助手</p>
           </div>
         </div>
-        <span className="badge" style={{ background: "var(--color-primary-600)", color: "#FFFCF7" }}>v0.2.x</span>
+        <span className="badge" style={{ background: "var(--color-primary-600)", color: "#FFFCF7" }}>v0.2.4</span>
       </div>
 
       {/* Credits */}
@@ -111,16 +114,6 @@ export default function About() {
           onChange={(e) => setLogs(e.target.value)}
           placeholder="粘贴 pnpm tauri dev 终端的报错信息或截图链接"
         />
-
-        {msg && (
-          <div style={{
-            padding: "8px 12px", borderRadius: 6, fontSize: 12, marginBottom: 12,
-            background: msg.includes("失败") ? "var(--toast-error-bg)" : "var(--toast-success-bg)",
-            color: msg.includes("失败") ? "var(--toast-error-text)" : "var(--toast-success-text)",
-          }}>
-            {msg}
-          </div>
-        )}
 
         <button
           className="btn btn-primary"

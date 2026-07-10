@@ -1,4 +1,4 @@
-use tauri;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
 #[tauri::command]
 pub fn send_feedback(name: String, description: String, logs: String) -> Result<(), String> {
@@ -13,32 +13,9 @@ pub fn send_feedback(name: String, description: String, logs: String) -> Result<
 
     let mailto = format!(
         "mailto:eastz@pku.edu.cn?subject={}&body={}",
-        urlencoding(&subject),
-        urlencoding(&body),
+        utf8_percent_encode(subject, NON_ALPHANUMERIC),
+        utf8_percent_encode(&body, NON_ALPHANUMERIC),
     );
 
     open::that(&mailto).map_err(|e| format!("无法打开邮件客户端: {}", e))
-}
-
-fn urlencoding(s: &str) -> String {
-    let mut result = String::new();
-    for byte in s.as_bytes() {
-        match *byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                result.push(*byte as char);
-            }
-            b' ' => result.push_str("%20"),
-            b'\n' => result.push_str("%0A"),
-            b'\r' => result.push_str("%0D"),
-            b'/' => result.push_str("%2F"),
-            b':' => result.push_str("%3A"),
-            b'@' => result.push_str("%40"),
-            b'[' => result.push_str("%5B"),
-            b']' => result.push_str("%5D"),
-            _ => {
-                result.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    result
 }

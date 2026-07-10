@@ -1,35 +1,27 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import PageIllustration from "../components/PageIllustration";
-
-interface SubgroupInfo {
-  subgroup_id: string;
-  subgroup_name: string;
-  anime_title: string;
-  bangumi_id: string;
-}
-
-interface RssEpisode {
-  title: string;
-  torrent_url: string;
-  magnet_uri: string;
-  pub_date: string;
-  episode_number: number | null;
-}
+import Toast from "../components/Toast";
+import { useToast } from "../hooks/useToast";
+import type { RefreshResult, RssEpisode, SubgroupInfo } from "../types";
+import { formatEpisodeNumber } from "../utils/format";
 
 export default function MikanBrowser() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const openingRef = useRef<Promise<void> | null>(null);
   const [webviewOpen, setWebviewOpen] = useState(false);
+  const [webviewError, setWebviewError] = useState("");
   const lastUrlRef = useRef<string>("");
+  const { toast, showToast, clearToast } = useToast(5000);
 
-  const navigate = useCallback((action: "back" | "forward" | "reload" | "home") => {
+  const webviewNav = useCallback((action: "back" | "forward" | "reload" | "home") => {
     const jsMap: Record<string, string> = {
       back: "history.back()",
       forward: "history.forward()",
       reload: "location.reload()",
       home: "location.href='https://mikanani.me'",
     };
-    invoke("mikan_eval", { js: jsMap[action] }).catch(() => {});
+    invoke("mikan_eval", { js: jsMap[action] }).catch((e) => console.warn("mikan nav failed:", e));
   }, []);
 
   const updateBounds = useCallback(async () => {
@@ -40,36 +32,53 @@ export default function MikanBrowser() {
       y: rect.top,
       width: rect.width,
       height: rect.height,
-    }).catch(() => {});
+    }).catch((e) => console.warn("mikan bounds update failed:", e));
   }, []);
 
   // Helpers to open/close the native child WebView
   const openWebView = useCallback(async () => {
     if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    await invoke("open_mikan_browser", {
-      x: rect.left,
-      y: rect.top,
-      width: rect.width,
-      height: rect.height,
-      url: lastUrlRef.current || "",
-    }).catch((e) => console.error("Failed to open mikan browser:", e));
-    setWebviewOpen(true);
+    if (openingRef.current) return openingRef.current;
+
+    openingRef.current = (async () => {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      try {
+        await invoke("open_mikan_browser", {
+          x: rect.left,
+          y: rect.top,
+          width: rect.width,
+          height: rect.height,
+          url: lastUrlRef.current || "",
+        });
+        setWebviewOpen(true);
+        setWebviewError("");
+      } catch (e) {
+        console.error("Failed to open mikan browser:", e);
+        setWebviewOpen(false);
+        setWebviewError("打开蜜柑浏览器失败: " + String(e));
+      } finally {
+        openingRef.current = null;
+      }
+    })();
+
+    return openingRef.current;
   }, []);
 
   const closeWebView = useCallback(async () => {
-    const currentUrl = await invoke<string>("close_mikan_browser").catch(() => "");
+    if (openingRef.current) {
+      await openingRef.current;
+    }
+    const currentUrl = await invoke<string>("close_mikan_browser").catch((error) => {
+      console.warn("mikan close failed:", error);
+      return "";
+    });
     if (currentUrl) lastUrlRef.current = currentUrl;
     setWebviewOpen(false);
   }, []);
 
-  // Initial open + resize tracking
+  // Resize tracking. Opening is handled by the modal-aware effect below.
   useEffect(() => {
-    let cancelled = false;
-    const raf = requestAnimationFrame(async () => {
-      if (!cancelled) await openWebView();
-    });
-
     const onResize = () => { updateBounds(); };
     window.addEventListener("resize", onResize);
 
@@ -77,17 +86,14 @@ export default function MikanBrowser() {
     if (containerRef.current) observer.observe(containerRef.current);
 
     return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf);
       window.removeEventListener("resize", onResize);
       observer.disconnect();
-      invoke("close_mikan_browser").catch(() => {});
+      invoke("close_mikan_browser").catch((error) => console.warn("mikan cleanup failed:", error));
     };
-  }, [updateBounds, openWebView]);
+  }, [updateBounds]);
 
   // ── Scan state ──
   const [scanning, setScanning] = useState(false);
-  const [scanMsg, setScanMsg] = useState("");
 
   // Step 1: subgroup list from page scan
   const [subgroups, setSubgroups] = useState<SubgroupInfo[]>([]);
@@ -105,6 +111,17 @@ export default function MikanBrowser() {
   const isAnyModalOpen = showSubgroupModal || showEpisodeModal;
 
   useEffect(() => {
+    if (!isAnyModalOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (showEpisodeModal) setShowEpisodeModal(false);
+      else setShowSubgroupModal(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isAnyModalOpen, showEpisodeModal]);
+
+  useEffect(() => {
     if (isAnyModalOpen && webviewOpen) {
       closeWebView();
     } else if (!isAnyModalOpen && !webviewOpen) {
@@ -117,19 +134,19 @@ export default function MikanBrowser() {
   /// Step 1: scan the page for all subgroups
   const handleScanRss = async () => {
     setScanning(true);
-    setScanMsg("正在扫描页面中的字幕组...");
+    showToast("正在扫描页面中的字幕组...", true);
     try {
       const result = await invoke<SubgroupInfo[]>("scan_mikan_rss");
       if (result.length === 0) {
-        setScanMsg("未发现字幕组。请确保当前浏览的是一个番剧详情页。");
+        showToast("未发现字幕组。请确保当前浏览的是一个番剧详情页。", false);
         setSubgroups([]);
       } else {
         setSubgroups(result);
         setShowSubgroupModal(true);
-        setScanMsg("");
+        clearToast();
       }
     } catch (e) {
-      setScanMsg("扫描失败: " + String(e));
+      showToast("扫描失败: " + String(e), false);
       setSubgroups([]);
     } finally {
       setScanning(false);
@@ -141,7 +158,7 @@ export default function MikanBrowser() {
     setSelectedSubgroup(sg);
     setShowSubgroupModal(false);
     setFetchingEpisodes(true);
-    setScanMsg(`正在获取 "${sg.subgroup_name}" 的 RSS 内容...`);
+    showToast(`正在获取 "${sg.subgroup_name}" 的 RSS 内容...`, true);
     try {
       const eps = await invoke<RssEpisode[]>("fetch_mikan_rss", {
         bangumiId: sg.bangumi_id,
@@ -149,9 +166,9 @@ export default function MikanBrowser() {
       });
       setEpisodes(eps);
       setShowEpisodeModal(true);
-      setScanMsg("");
+      clearToast();
     } catch (e) {
-      setScanMsg("获取 RSS 失败: " + String(e));
+      showToast("获取 RSS 失败: " + String(e), false);
       setEpisodes([]);
     } finally {
       setFetchingEpisodes(false);
@@ -172,21 +189,20 @@ export default function MikanBrowser() {
       });
       setShowEpisodeModal(false);
       const modeLabel = downloadMode === "auto" ? "自动下载" : "手动管理";
-      setScanMsg(`已订阅(${modeLabel}): ${selectedSubgroup.anime_title} [${selectedSubgroup.subgroup_name}]，正在拉取 RSS...`);
+      showToast(`已订阅(${modeLabel})，正在拉取 RSS...`, true);
       // Automatically trigger a refresh so episodes get pulled in immediately
       try {
-        const r = await invoke<{ new_episodes: number; started_downloads: number }>("refresh_all_subscriptions");
+        const r = await invoke<RefreshResult>("refresh_all_subscriptions");
         if (downloadMode === "auto") {
-          setScanMsg(`已订阅 · 新增 ${r.new_episodes} 集，开始下载 ${r.started_downloads} 个`);
+          showToast(`已订阅，新增 ${r.new_episodes} 集，开始下载 ${r.started_downloads} 个`, true);
         } else {
-          setScanMsg(`已订阅(手动管理) · 新增 ${r.new_episodes} 集，可在下载管理中手动选择下载`);
+          showToast(`已订阅（手动管理），新增 ${r.new_episodes} 集`, true);
         }
-      } catch {
-        setScanMsg(`已订阅: ${selectedSubgroup.anime_title} [${selectedSubgroup.subgroup_name}]`);
+      } catch (error) {
+        showToast(`订阅已保存，但首次刷新失败: ${String(error)}`, false);
       }
-      setTimeout(() => setScanMsg(""), 5000);
     } catch (e) {
-      setScanMsg("订阅失败: " + String(e));
+      showToast("订阅失败: " + String(e), false);
     } finally {
       setSubscribing(false);
     }
@@ -214,6 +230,7 @@ export default function MikanBrowser() {
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <Toast toast={toast} />
       <div className="page-header">
         <div className="page-header-left">
           <PageIllustration page="/browse" />
@@ -223,10 +240,10 @@ export default function MikanBrowser() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <button style={navBtnStyle} onClick={() => navigate("back")} title="后退">←</button>
-          <button style={navBtnStyle} onClick={() => navigate("forward")} title="前进">→</button>
-          <button style={navBtnStyle} onClick={() => navigate("reload")} title="刷新">↻</button>
-          <button style={{ ...navBtnStyle, fontSize: 16 }} onClick={() => navigate("home")} title="主页">⌂</button>
+          <button style={navBtnStyle} onClick={() => webviewNav("back")} title="后退">←</button>
+          <button style={navBtnStyle} onClick={() => webviewNav("forward")} title="前进">→</button>
+          <button style={navBtnStyle} onClick={() => webviewNav("reload")} title="刷新">↻</button>
+          <button style={{ ...navBtnStyle, fontSize: 16 }} onClick={() => webviewNav("home")} title="主页">⌂</button>
           <button
             className="btn btn-primary"
             onClick={handleScanRss}
@@ -238,13 +255,20 @@ export default function MikanBrowser() {
         </div>
       </div>
 
-      {scanMsg && (
+      {webviewError && (
         <div style={{
           marginBottom: 12, padding: "8px 12px", borderRadius: 6, fontSize: 12,
-          background: scanMsg.includes("失败") ? "var(--toast-error-bg)" : "var(--toast-success-bg)",
-          color: scanMsg.includes("失败") ? "var(--toast-error-text)" : "var(--toast-success-text)",
+          background: "var(--toast-error-bg)",
+          color: "var(--toast-error-text)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
         }}>
-          {scanMsg}
+          <span>{webviewError}</span>
+          <button className="btn btn-ghost" style={{ fontSize: 12, padding: "3px 8px" }} onClick={openWebView}>
+            重试
+          </button>
         </div>
       )}
 
@@ -258,10 +282,10 @@ export default function MikanBrowser() {
           <div style={{
             background: "var(--bg-card)", borderRadius: 12, padding: 24, maxWidth: 520, width: "90%",
             maxHeight: "70vh", overflow: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
-          }} onClick={(e) => e.stopPropagation()}>
+          }} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="subgroup-dialog-title">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <h3 style={{ fontSize: 16, fontWeight: 600 }}>选择字幕组</h3>
-              <button onClick={() => setShowSubgroupModal(false)} style={{
+              <h3 id="subgroup-dialog-title" style={{ fontSize: 16, fontWeight: 600 }}>选择字幕组</h3>
+              <button autoFocus aria-label="关闭字幕组选择" onClick={() => setShowSubgroupModal(false)} style={{
                 width: 28, height: 28, borderRadius: 6, border: "none", cursor: "pointer",
                 background: "transparent", fontSize: 16, color: "var(--text-secondary)",
               }}>✕</button>
@@ -271,14 +295,14 @@ export default function MikanBrowser() {
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {subgroups.map((sg) => (
-                <div key={sg.subgroup_id} style={{
+                <button type="button" key={sg.subgroup_id} className="interactive-reset" style={{
                   display: "flex", justifyContent: "space-between", alignItems: "center",
                   padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border-color)",
                   background: "var(--bg-sidebar)", cursor: "pointer",
                 }} onClick={() => handleSelectSubgroup(sg)}>
                   <span style={{ fontSize: 13, fontWeight: 500 }}>{sg.subgroup_name}</span>
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>查看剧集 →</span>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -295,15 +319,15 @@ export default function MikanBrowser() {
           <div style={{
             background: "var(--bg-card)", borderRadius: 12, padding: 24, maxWidth: 560, width: "90%",
             maxHeight: "75vh", overflow: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
-          }} onClick={(e) => e.stopPropagation()}>
+          }} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="episode-dialog-title">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
               <div>
-                <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 2 }}>{selectedSubgroup.anime_title}</h3>
+                <h3 id="episode-dialog-title" style={{ fontSize: 16, fontWeight: 600, marginBottom: 2 }}>{selectedSubgroup.anime_title}</h3>
                 <p style={{ fontSize: 12, color: "var(--text-secondary)" }}>
                   {selectedSubgroup.subgroup_name} · 共 {episodes.length} 集
                 </p>
               </div>
-              <button onClick={() => setShowEpisodeModal(false)} style={{
+              <button autoFocus aria-label="关闭剧集预览" onClick={() => setShowEpisodeModal(false)} style={{
                 width: 28, height: 28, borderRadius: 6, border: "none", cursor: "pointer",
                 background: "transparent", fontSize: 16, color: "var(--text-secondary)",
               }}>✕</button>
@@ -315,7 +339,7 @@ export default function MikanBrowser() {
               maxHeight: "40vh", overflow: "auto", marginBottom: 16,
             }}>
               {episodes.map((ep, i) => (
-                <div key={i} style={{
+                <div key={ep.torrent_url || ep.magnet_uri || `${ep.title}-${ep.pub_date}`} style={{
                   display: "flex", justifyContent: "space-between", alignItems: "center",
                   padding: "6px 10px", borderRadius: 6, fontSize: 12,
                   background: i % 2 === 0 ? "var(--bg-sidebar)" : "transparent",
@@ -326,7 +350,7 @@ export default function MikanBrowser() {
                     }}>
                       {ep.episode_number != null && (
                         <span style={{ color: "var(--text-muted)", marginRight: 6 }}>
-                          第{ep.episode_number % 1 === 0 ? ep.episode_number : ep.episode_number.toFixed(1)}话
+                          第{formatEpisodeNumber(ep.episode_number)}话
                         </span>
                       )}
                       {ep.title}

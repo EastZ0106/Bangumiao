@@ -1,25 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import PageIllustration from "../components/PageIllustration";
-
-interface AnimeGroup {
-  title: string;
-  episodes: EpisodeItem[];
-}
-
-interface EpisodeItem {
-  file_path: string;
-  episode_number: number | null;
-  episode_title: string;
-  downloaded: boolean;
-  watched: boolean;
-  file_name: string;
-}
+import Toast from "../components/Toast";
+import { useToast } from "../hooks/useToast";
+import type { AnimeGroup } from "../types";
+import { formatEpisodeNumber } from "../utils/format";
 
 export default function Library() {
   const [groups, setGroups] = useState<AnimeGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const { toast, showToast } = useToast();
 
   const loadLibrary = useCallback(async () => {
     try {
@@ -27,11 +18,11 @@ export default function Library() {
       const data = await invoke<AnimeGroup[]>("scan_library");
       setGroups(data);
     } catch (e) {
-      console.error("Failed to scan library:", e);
+      showToast("扫描失败: " + String(e), false);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
     loadLibrary();
@@ -42,7 +33,7 @@ export default function Library() {
       await invoke("mark_watched", { filePath });
       await loadLibrary();
     } catch (e) {
-      console.error("Failed to mark watched:", e);
+      showToast("标记失败: " + String(e), false);
     }
   };
 
@@ -56,15 +47,16 @@ export default function Library() {
   };
 
   const handleOpenFile = async (filePath: string) => {
-    try { await invoke("open_file", { filePath }); } catch (e) { console.error(e); }
+    try { await invoke("open_file", { filePath }); } catch (e) { showToast("播放失败: " + String(e), false); }
   };
 
   const handleOpenDir = async (filePath: string) => {
-    try { await invoke("open_file_dir", { filePath }); } catch (e) { console.error(e); }
+    try { await invoke("open_file_dir", { filePath }); } catch (e) { showToast("打开文件夹失败: " + String(e), false); }
   };
 
   return (
     <div>
+      <Toast toast={toast} />
       <div className="page-header">
         <div className="page-header-left">
           <PageIllustration page="/library" />
@@ -96,23 +88,24 @@ export default function Library() {
 
             return (
               <div className="card" key={g.title} style={{ padding: "12px 16px" }}>
-                {/* Title row — click to expand/collapse */}
-                <div
-                  onClick={() => toggleExpand(g.title)}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 8,
-                    cursor: "pointer", userSelect: "none",
-                  }}
-                >
-                  <span style={{ fontSize: 14 }}>{isExpanded ? "▾" : "▸"}</span>
-                  <span style={{ fontWeight: 600, fontSize: 15, flex: 1 }}>{g.title}</span>
-                  <span style={{ fontSize: 12, color: "var(--text-muted)", marginRight: 8 }}>
-                    {watchedCount} / {g.episodes.length} 已看
-                  </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <button
+                    type="button"
+                    className="interactive-reset"
+                    aria-expanded={isExpanded}
+                    onClick={() => toggleExpand(g.title)}
+                    style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}
+                  >
+                    <span style={{ fontSize: 14 }}>{isExpanded ? "▾" : "▸"}</span>
+                    <span style={{ fontWeight: 600, fontSize: 15, flex: 1 }}>{g.title}</span>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", marginRight: 8 }}>
+                      {watchedCount} / {g.episodes.length} 已看
+                    </span>
+                  </button>
                   <button
                     className="btn btn-ghost"
                     style={{ fontSize: 11, padding: "2px 8px", flexShrink: 0 }}
-                    onClick={(e) => { e.stopPropagation(); handleOpenDir(firstEpPath); }}
+                    onClick={() => handleOpenDir(firstEpPath)}
                   >
                     打开文件夹
                   </button>
@@ -121,7 +114,7 @@ export default function Library() {
                 {/* Episode list — shown when expanded */}
                 {isExpanded && (
                   <div style={{ marginTop: 8, borderTop: "1px solid var(--border-color)", paddingTop: 6 }}>
-                    {g.episodes
+                    {[...g.episodes]
                       .sort((a, b) => (a.episode_number ?? 0) - (b.episode_number ?? 0))
                       .map((ep) => (
                         <div
@@ -141,7 +134,7 @@ export default function Library() {
                           }}>
                             {ep.episode_number != null && (
                               <span style={{ color: "var(--text-muted)", marginRight: 6, fontSize: 11 }}>
-                                第{ep.episode_number % 1 === 0 ? ep.episode_number : ep.episode_number.toFixed(1)}话
+                                第{formatEpisodeNumber(ep.episode_number)}话
                               </span>
                             )}
                             {ep.file_name}

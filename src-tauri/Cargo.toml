@@ -1,6 +1,6 @@
 [package]
 name = "bangumiao"
-version = "0.1.0"
+version = "0.2.4"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -32,10 +32,11 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 dirs = "5"
 regex-lite = "0.1"
+base64 = "0.22"
+percent-encoding = "2"
 
 [profile.release]
 opt-level = "s"
 strip = true
 lto = true
 codegen-units = 1
-

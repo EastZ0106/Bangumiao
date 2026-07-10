@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { HashRouter, Routes, Route } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import Subscribe from "./pages/Subscribe";
 import MikanBrowser from "./pages/MikanBrowser";
@@ -13,7 +13,7 @@ import "./styles/page-illustration.css";
 
 function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <div className="app-layout">
         <Sidebar />
         <main className="main-content">
@@ -28,7 +28,7 @@ function App() {
           </Routes>
         </main>
       </div>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
 

@@ -105,7 +105,7 @@ export default function Help() {
         </p>
         <h3 style={h3Style}>RSS 刷新间隔（分钟）</h3>
         <p style={pStyle}>
-          后台自动拉取 RSS 更新的时间间隔，默认 30 分钟。最小 5 分钟，最大 1440 分钟（24 小时）。修改后即时生效，无需重启。
+          后台自动拉取 RSS 更新的时间间隔，默认 30 分钟。最小 1 分钟，最大 1440 分钟（24 小时）。修改后即时生效，无需重启。
         </p>
         <h3 style={h3Style}>aria2 端口</h3>
         <p style={pStyle}>
@@ -113,7 +113,7 @@ export default function Help() {
         </p>
         <h3 style={h3Style}>最大同时下载数</h3>
         <p style={pStyle}>
-          aria2c 同时进行的下载任务上限，默认 5 个。
+          aria2c 同时进行的下载任务上限，默认 3 个。
         </p>
         <h3 style={h3Style}>下载后自动删除种子文件</h3>
         <p style={pStyle}>
@@ -127,7 +127,7 @@ export default function Help() {
 
       {/* Version */}
       <div style={{ textAlign: "center", fontSize: 11, color: "var(--text-muted)", padding: "16px 0" }}>
-        bangumiao v0.2.x · 基于 Tauri 2.x + React 构建
+        bangumiao v0.2.4 · 基于 Tauri 2.x + React 构建
       </div>
     </div>
   );

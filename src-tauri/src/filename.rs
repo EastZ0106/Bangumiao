@@ -1,4 +1,28 @@
 use std::path::Path;
+use std::sync::LazyLock;
+
+static TITLE_SUFFIX_PATTERNS: LazyLock<[regex_lite::Regex; 3]> = LazyLock::new(|| {
+    [
+        regex_lite::Regex::new(r"\s*[-–]\s*\d+(?:\.\d+)?\s*$").expect("valid title regex"),
+        regex_lite::Regex::new(r"\s*[第#][\d.]+[话話]\s*$").expect("valid title regex"),
+        regex_lite::Regex::new(r"\s*[Ee][Pp]?\s*\d+(?:\.\d+)?\s*$").expect("valid title regex"),
+    ]
+});
+
+static EPISODE_PATTERNS: LazyLock<[regex_lite::Regex; 5]> = LazyLock::new(|| {
+    [
+        regex_lite::Regex::new(r"(?:^|\s)[-–]\s*(\d+(?:\.\d+)?)\s*(?:\s|\[|$)")
+            .expect("valid episode regex"),
+        regex_lite::Regex::new(r"第\s*(\d+(?:\.\d+)?)\s*[话話]").expect("valid episode regex"),
+        regex_lite::Regex::new(r"[Ee][Pp]\s*(\d+(?:\.\d+)?)").expect("valid episode regex"),
+        regex_lite::Regex::new(r"#\s*(\d+(?:\.\d+)?)").expect("valid episode regex"),
+        regex_lite::Regex::new(r"\s(\d{2,3})\s").expect("valid episode regex"),
+    ]
+});
+
+static EPISODE_FALLBACK_PATTERN: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
+    regex_lite::Regex::new(r"[-–\s](\d{2,3})(?:\s|\[|\.\w+$)").expect("valid episode regex")
+});
 
 pub struct ParsedFilename {
     pub anime_title: String,
@@ -71,10 +95,7 @@ fn extract_title(name: &str) -> (String, String) {
         idx += 1;
     }
 
-    let mut title = text_parts
-        .join(" ")
-        .trim()
-        .to_string();
+    let mut title = text_parts.join(" ").trim().to_string();
 
     if title.is_empty() {
         title = name.to_string();
@@ -91,19 +112,65 @@ fn extract_title(name: &str) -> (String, String) {
 fn is_tag_part(s: &str) -> bool {
     let _upper = s.to_uppercase();
     let tag_keywords = [
-        "MP4", "MKV", "AVI", "HEVC", "H264", "H265", "X264", "X265", "AAC", "EAC3",
-        "FLAC", "OPUS", "1080P", "720P", "480P", "2160P", "4K", "WEBRIP", "BDRIP",
-        "WEB-DL", "BD", "CHS", "CHT", "GB", "BIG5", "JP", "CHI", "JPN", "SRT",
-        "ASS", "PGS", "10BIT", "8BIT", "HI10P", "SUBPLEASE", "ERAWP", "RAW",
-        "MOVIE", "OVA", "OAD", "ONA", "TV", "FINALE", "V2", "V3", "REV",
+        "MP4",
+        "MKV",
+        "AVI",
+        "HEVC",
+        "H264",
+        "H265",
+        "X264",
+        "X265",
+        "AAC",
+        "EAC3",
+        "FLAC",
+        "OPUS",
+        "1080P",
+        "720P",
+        "480P",
+        "2160P",
+        "4K",
+        "WEBRIP",
+        "BDRIP",
+        "WEB-DL",
+        "BD",
+        "CHS",
+        "CHT",
+        "GB",
+        "BIG5",
+        "JP",
+        "CHI",
+        "JPN",
+        "SRT",
+        "ASS",
+        "PGS",
+        "10BIT",
+        "8BIT",
+        "HI10P",
+        "SUBPLEASE",
+        "ERAWP",
+        "RAW",
+        "MOVIE",
+        "OVA",
+        "OAD",
+        "ONA",
+        "TV",
+        "FINALE",
+        "V2",
+        "V3",
+        "REV",
     ];
 
     // Check if s contains mostly known tag patterns
     let parts: Vec<&str> = s.split(&['&', '-', '_', ' ', '+'][..]).collect();
-    let tag_count = parts.iter().filter(|p| {
-        let p_upper = p.to_uppercase();
-        tag_keywords.iter().any(|tag| p_upper == *tag || p_upper.starts_with(tag))
-    }).count();
+    let tag_count = parts
+        .iter()
+        .filter(|p| {
+            let p_upper = p.to_uppercase();
+            tag_keywords
+                .iter()
+                .any(|tag| p_upper == *tag || p_upper.starts_with(tag))
+        })
+        .count();
 
     if parts.is_empty() {
         return false;
@@ -111,18 +178,82 @@ fn is_tag_part(s: &str) -> bool {
 
     // Check for subtitle group patterns (often ending with &xxx or just names)
     let subtitle_groups = [
-        "LOLIHOUSE", "BEANSUB", "FZSD", "PRE-S", "Y-RAWS", "NC-RAWS",
-        "COOLGIRLS", "MAKAIKAISUB", "SWSUB", "KISSSUB", "SAKURATOON",
-        "ANi", "HKACG", "CATA", "DHR", "DMG", "DMS", "DYMD", "EMD",
-        "KNA", "KTKJ", "LHZ", "LITEN", "MCE", "MINGY", "NEO",
-        "OMOE", "POPGO", "QZL", "RKS", "SAKURA", "SC", "SFEO", "SJ",
-        "SK", "SOFCJ", "SOS", "SP", "SSA", "SUBPIG", "SUM", "SW",
-        "TOKYO", "UHA", "UHAW", "VCB", "WAKABA", "XKUN", "XX", "YUI",
-        "YYQ", "ZERO", "ZYZ", "SWEETSUB", "MOOZZI2", "REINFORCE",
-        "ANK", "LITTLEBAKAS", "DOREMI", "EMBER", "B-GLOBAL", "I'S",
-        "AIVC", "AI-RAWS", "LOWPOWER", "SNOW-RAWS",
-        "LOLIHOUSE", "BEANSUB", "MAKAIKAISUB", "NC-RAWS", "Y-Raws",
-        "PRELUD", "H-ED", "AI-Raws", "REINFORCE", "OWA",
+        "LOLIHOUSE",
+        "BEANSUB",
+        "FZSD",
+        "PRE-S",
+        "Y-RAWS",
+        "NC-RAWS",
+        "COOLGIRLS",
+        "MAKAIKAISUB",
+        "SWSUB",
+        "KISSSUB",
+        "SAKURATOON",
+        "ANi",
+        "HKACG",
+        "CATA",
+        "DHR",
+        "DMG",
+        "DMS",
+        "DYMD",
+        "EMD",
+        "KNA",
+        "KTKJ",
+        "LHZ",
+        "LITEN",
+        "MCE",
+        "MINGY",
+        "NEO",
+        "OMOE",
+        "POPGO",
+        "QZL",
+        "RKS",
+        "SAKURA",
+        "SC",
+        "SFEO",
+        "SJ",
+        "SK",
+        "SOFCJ",
+        "SOS",
+        "SP",
+        "SSA",
+        "SUBPIG",
+        "SUM",
+        "SW",
+        "TOKYO",
+        "UHA",
+        "UHAW",
+        "VCB",
+        "WAKABA",
+        "XKUN",
+        "XX",
+        "YUI",
+        "YYQ",
+        "ZERO",
+        "ZYZ",
+        "SWEETSUB",
+        "MOOZZI2",
+        "REINFORCE",
+        "ANK",
+        "LITTLEBAKAS",
+        "DOREMI",
+        "EMBER",
+        "B-GLOBAL",
+        "I'S",
+        "AIVC",
+        "AI-RAWS",
+        "LOWPOWER",
+        "SNOW-RAWS",
+        "LOLIHOUSE",
+        "BEANSUB",
+        "MAKAIKAISUB",
+        "NC-RAWS",
+        "Y-Raws",
+        "PRELUD",
+        "H-ED",
+        "AI-Raws",
+        "REINFORCE",
+        "OWA",
     ];
 
     // If more than half the parts are tags, treat it as a tag part
@@ -130,56 +261,37 @@ fn is_tag_part(s: &str) -> bool {
     tag_count as f64 / parts.len() as f64 >= 0.5
         || parts.iter().any(|p| {
             let p_upper = p.to_uppercase();
-            subtitle_groups.iter().any(|g| p_upper == *g || p_upper.contains(g))
+            subtitle_groups
+                .iter()
+                .any(|g| p_upper == *g || p_upper.contains(g))
         })
 }
 
 fn strip_episode_suffix(title: &str) -> String {
-    let patterns = [
-        (r"\s*[-–]\s*\d+(?:\.\d+)?\s*$", ""),
-        (r"\s*[第#][\d.]+[话話]\s*$", ""),
-        (r"\s*[Ee][Pp]?\s*\d+(?:\.\d+)?\s*$", ""),
-    ];
-
     let mut result = title.to_string();
-    for (pat, _) in &patterns {
-        if let Ok(re) = regex_lite::Regex::new(pat) {
-            result = re.replace(&result, "").to_string();
-        }
+    for re in TITLE_SUFFIX_PATTERNS.iter() {
+        result = re.replace(&result, "").to_string();
     }
     result.trim().to_string()
 }
 
 fn parse_episode_number(name: &str) -> Option<f64> {
-    // Try various common patterns
-    let patterns = [
-        regex_lite::Regex::new(r"(?:^|\s)[-–]\s*(\d+(?:\.\d+)?)\s*(?:\s|\[|$)"),  // " - 01" or "- 01 ["
-        regex_lite::Regex::new(r"第\s*(\d+(?:\.\d+)?)\s*[话話]"),      // "第01话"
-        regex_lite::Regex::new(r"[Ee][Pp]\s*(\d+(?:\.\d+)?)"),         // "EP01", "ep 01"
-        regex_lite::Regex::new(r"#\s*(\d+(?:\.\d+)?)"),                // "#01"
-        regex_lite::Regex::new(r"\s(\d{2,3})\s"),                       // standalone " 01 " (less confident)
-    ];
-
-    for re in patterns.iter() {
-        if let Ok(re) = re {
-            if let Some(caps) = re.captures(name) {
-                if let Some(m) = caps.get(1) {
-                    if let Ok(n) = m.as_str().parse::<f64>() {
-                        return Some(n);
-                    }
+    for re in EPISODE_PATTERNS.iter() {
+        if let Some(caps) = re.captures(name) {
+            if let Some(m) = caps.get(1) {
+                if let Ok(n) = m.as_str().parse::<f64>() {
+                    return Some(n);
                 }
             }
         }
     }
 
     // Fallback: find any isolated number that looks like an episode
-    if let Ok(re) = regex_lite::Regex::new(r"[-–\s](\d{2,3})(?:\s|\[|\.\w+$)") {
-        if let Some(caps) = re.captures(name) {
-            if let Some(m) = caps.get(1) {
-                if let Ok(n) = m.as_str().parse::<f64>() {
-                    if n >= 1.0 && n <= 999.0 {
-                        return Some(n);
-                    }
+    if let Some(caps) = EPISODE_FALLBACK_PATTERN.captures(name) {
+        if let Some(m) = caps.get(1) {
+            if let Ok(n) = m.as_str().parse::<f64>() {
+                if (1.0..=999.0).contains(&n) {
+                    return Some(n);
                 }
             }
         }

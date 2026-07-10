@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Write};
@@ -5,11 +6,14 @@ use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-
+const RPC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+const RPC_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+const RPC_READ_BUFFER_SIZE: usize = 8192;
 
 pub struct Aria2Manager {
     process: Option<Child>,
     port: u16,
+    secret: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,11 +52,28 @@ impl Aria2Manager {
         Aria2Manager {
             process: None,
             port,
+            secret: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
+    pub fn new_with_secret(port: u16, secret: String) -> Self {
+        Aria2Manager {
+            process: None,
+            port,
+            secret,
         }
     }
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    pub fn set_port(&mut self, port: u16) {
+        self.port = port;
+    }
+
+    pub fn rpc_client(&self) -> Self {
+        Aria2Manager::new_with_secret(self.port, self.secret.clone())
     }
 
     /// Fast single-attempt port check — no retry loop.
@@ -63,11 +84,30 @@ impl Aria2Manager {
             Ok(a) => a,
             Err(_) => return false,
         };
-        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(100))
-            .is_ok()
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(100)).is_ok()
     }
 
-    pub fn start(&mut self, aria2_path: &str, download_dir: &str, session_dir: &str) -> Result<(), String> {
+    pub fn start(
+        &mut self,
+        aria2_path: &str,
+        download_dir: &str,
+        session_dir: &str,
+    ) -> Result<(), String> {
+        self.start_with_config(aria2_path, download_dir, session_dir, 5)
+    }
+
+    pub fn start_with_config(
+        &mut self,
+        aria2_path: &str,
+        download_dir: &str,
+        session_dir: &str,
+        max_concurrent_downloads: u16,
+    ) -> Result<(), String> {
+        if let Some(mut child) = self.process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
         let _ = Command::new("taskkill")
             .args(["/F", "/IM", "aria2c-x86_64-pc-windows-msvc.exe"])
             .creation_flags(CREATE_NO_WINDOW)
@@ -82,11 +122,15 @@ impl Aria2Manager {
             let _ = std::fs::write(&session_file, "");
         }
 
+        self.secret = uuid::Uuid::new_v4().to_string();
+        let max_concurrent = max_concurrent_downloads.clamp(1, 10);
+
         let args = [
             "--enable-rpc",
             &format!("--rpc-listen-port={}", self.port),
             "--rpc-listen-all=false",
-            "--rpc-allow-origin-all=true",
+            "--rpc-allow-origin-all=false",
+            &format!("--rpc-secret={}", self.secret),
             "--follow-torrent=mem",
             "--bt-metadata-only=false",
             "--enable-dht=true",
@@ -94,7 +138,7 @@ impl Aria2Manager {
             "--dht-listen-port=6881-6999",
             &format!("--dir={}", download_dir),
             "--file-allocation=none",
-            "--max-concurrent-downloads=5",
+            &format!("--max-concurrent-downloads={}", max_concurrent),
             "--max-connection-per-server=16",
             "--split=16",
             "--min-split-size=1M",
@@ -108,7 +152,7 @@ impl Aria2Manager {
         ];
 
         let child = Command::new(aria2_path)
-            .args(&args)
+            .args(args)
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Failed to start aria2: {}", e))?;
@@ -132,12 +176,21 @@ impl Aria2Manager {
         Self::port_is_open(self.port)
     }
 
+    fn authenticated_params(&self, params: Value) -> Value {
+        let mut authed = vec![Value::String(format!("token:{}", self.secret))];
+        match params {
+            Value::Array(items) => authed.extend(items),
+            other => authed.push(other),
+        }
+        Value::Array(authed)
+    }
+
     fn rpc_call(&self, method: &str, params: &Value) -> Result<Value, String> {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": "bangumiao",
             "method": method,
-            "params": params,
+            "params": self.authenticated_params(params.clone()),
         });
         let body_str = body.to_string();
 
@@ -152,29 +205,19 @@ impl Aria2Manager {
             .parse()
             .map_err(|e: std::net::AddrParseError| e.to_string())?;
 
-        let stream_result = std::net::TcpStream::connect_timeout(
-            &addr,
-            std::time::Duration::from_millis(500),
-        );
+        let stream_result = std::net::TcpStream::connect_timeout(&addr, RPC_CONNECT_TIMEOUT);
         let mut stream = match stream_result {
             Ok(s) => s,
-            Err(_) => {
-                eprintln!("[aria2] connect timeout port={}", self.port);
-                return Ok(Value::Null);
-            }
+            Err(e) => return Err(format!("Connect 127.0.0.1:{} failed: {}", self.port, e)),
         };
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(1500)))
-            .ok();
-        stream
-            .set_write_timeout(Some(std::time::Duration::from_millis(1500)))
-            .ok();
+        stream.set_read_timeout(Some(RPC_IO_TIMEOUT)).ok();
+        stream.set_write_timeout(Some(RPC_IO_TIMEOUT)).ok();
         stream
             .write_all(request.as_bytes())
             .map_err(|e| format!("Write: {}", e))?;
 
         let mut buf = Vec::new();
-        let mut temp = [0u8; 8192];
+        let mut temp = [0u8; RPC_READ_BUFFER_SIZE];
         loop {
             match stream.read(&mut temp) {
                 Ok(0) => break,
@@ -190,12 +233,12 @@ impl Aria2Manager {
         let response_str = String::from_utf8_lossy(&buf);
         let json_part = match response_str.find("\r\n\r\n") {
             Some(pos) => &response_str[pos + 4..],
-            None => return Ok(Value::Null),
+            None => return Err("aria2 returned an invalid HTTP response".into()),
         };
 
         let json_clean = json_part.trim();
         if json_clean.is_empty() {
-            return Ok(Value::Null);
+            return Err("aria2 returned an empty response".into());
         }
 
         serde_json::from_str(json_clean).map_err(|e| {
@@ -209,160 +252,147 @@ impl Aria2Manager {
 
     pub fn add_uri(&self, uri: &str) -> Result<String, String> {
         let response = self.rpc_call("aria2.addUri", &serde_json::json!([[uri]]))?;
-        response["result"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "No GID returned".to_string())
+        rpc_string_result(response, "No GID returned")
     }
 
     pub fn add_uri_with_dir(&self, uri: &str, dir: &str) -> Result<String, String> {
-        let response =
-            self.rpc_call("aria2.addUri", &serde_json::json!([[uri], {"dir": dir}]))?;
-        response["result"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "No GID returned".to_string())
+        let response = self.rpc_call("aria2.addUri", &serde_json::json!([[uri], {"dir": dir}]))?;
+        rpc_string_result(response, "No GID returned")
     }
 
     pub fn add_torrent(&self, torrent_url: &str) -> Result<String, String> {
         let torrent_data = reqwest::blocking::get(torrent_url)
             .and_then(|r| r.bytes())
             .map_err(|e| format!("Failed to fetch torrent: {}", e))?;
-        let encoded = base64_encode(&torrent_data);
+        let encoded = BASE64_STANDARD.encode(&torrent_data);
         let response = self.rpc_call("aria2.addTorrent", &serde_json::json!([encoded]))?;
-        response["result"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "No GID returned".to_string())
+        rpc_string_result(response, "No GID returned")
     }
 
     pub fn tell_status(&self, gid: &str) -> Result<DownloadStatus, String> {
         let response = self.rpc_call(
             "aria2.tellStatus",
-            &serde_json::json!([gid, [
-                "status", "totalLength", "completedLength", "downloadSpeed", "files"
-            ]]),
+            &serde_json::json!([
+                gid,
+                [
+                    "status",
+                    "totalLength",
+                    "completedLength",
+                    "downloadSpeed",
+                    "files"
+                ]
+            ]),
         )?;
         serde_json::from_value(response["result"].clone())
             .map_err(|e| format!("Failed to parse status: {}", e))
     }
 
     pub fn tell_active(&self) -> Result<Vec<DownloadStatus>, String> {
-        eprintln!("[aria2] tell_active");
         let response = self.rpc_call(
             "aria2.tellActive",
             &serde_json::json!([[
-                "gid", "status", "totalLength", "completedLength", "downloadSpeed", "files"
+                "gid",
+                "status",
+                "totalLength",
+                "completedLength",
+                "downloadSpeed",
+                "files"
             ]]),
         )?;
         match response["result"].as_array() {
-            Some(arr) => {
-                let v: Vec<_> = arr
-                    .iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                    .collect();
-                eprintln!("[aria2] tell_active → {} tasks", v.len());
-                Ok(v)
-            }
+            Some(arr) => arr
+                .iter()
+                .cloned()
+                .map(serde_json::from_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to parse active download: {e}")),
             None => Ok(vec![]),
         }
     }
 
     pub fn tell_stopped(&self, offset: i32, num: i32) -> Result<Vec<DownloadStatus>, String> {
-        eprintln!("[aria2] tell_stopped offset={} num={}", offset, num);
         let response = self.rpc_call(
             "aria2.tellStopped",
-            &serde_json::json!([offset, num, [
-                "gid", "status", "totalLength", "completedLength", "downloadSpeed", "files"
-            ]]),
+            &serde_json::json!([
+                offset,
+                num,
+                [
+                    "gid",
+                    "status",
+                    "totalLength",
+                    "completedLength",
+                    "downloadSpeed",
+                    "files"
+                ]
+            ]),
         )?;
         match response["result"].as_array() {
-            Some(arr) => {
-                let v: Vec<_> = arr
-                    .iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                    .collect();
-                eprintln!("[aria2] tell_stopped → {} tasks", v.len());
-                Ok(v)
-            }
+            Some(arr) => arr
+                .iter()
+                .cloned()
+                .map(serde_json::from_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to parse stopped download: {e}")),
             None => Ok(vec![]),
         }
     }
 
     pub fn pause(&self, gid: &str) -> Result<String, String> {
-        eprintln!("[aria2] pause gid={}", gid);
-        let response = self.rpc_call("aria2.pause", &serde_json::json!([gid]))?;
-        let result = response["result"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "Failed to pause".to_string())?;
-        eprintln!("[aria2] pause ok → {}", result);
-        Ok(result)
+        self.gid_action("aria2.pause", gid, "Failed to pause")
     }
 
     pub fn unpause(&self, gid: &str) -> Result<String, String> {
-        eprintln!("[aria2] unpause gid={}", gid);
-        let response = self.rpc_call("aria2.unpause", &serde_json::json!([gid]))?;
-        let result = response["result"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "Failed to unpause".to_string())?;
-        eprintln!("[aria2] unpause ok → {}", result);
-        Ok(result)
+        self.gid_action("aria2.unpause", gid, "Failed to unpause")
     }
 
     pub fn remove(&self, gid: &str) -> Result<String, String> {
-        eprintln!("[aria2] remove gid={}", gid);
-        let response = self.rpc_call("aria2.remove", &serde_json::json!([gid]))?;
-        let result = response["result"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "Failed to remove".to_string())?;
-        eprintln!("[aria2] remove ok → {}", result);
-        Ok(result)
+        self.gid_action("aria2.remove", gid, "Failed to remove")
     }
 
     pub fn force_remove(&self, gid: &str) -> Result<String, String> {
-        eprintln!("[aria2] forceRemove gid={}", gid);
-        let response = self.rpc_call("aria2.forceRemove", &serde_json::json!([gid]))?;
-        let result = response["result"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "Failed to force remove".to_string())?;
-        eprintln!("[aria2] forceRemove ok → {}", result);
-        Ok(result)
+        self.gid_action("aria2.forceRemove", gid, "Failed to force remove")
     }
 
     pub fn remove_download_result(&self, gid: &str) -> Result<String, String> {
-        eprintln!("[aria2] removeDownloadResult gid={}", gid);
-        let response = self.rpc_call("aria2.removeDownloadResult", &serde_json::json!([gid]))?;
-        let result = response["result"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "Failed to remove download result".to_string())?;
-        eprintln!("[aria2] removeDownloadResult ok → {}", result);
-        Ok(result)
+        self.gid_action(
+            "aria2.removeDownloadResult",
+            gid,
+            "Failed to remove download result",
+        )
     }
 
     pub fn add_torrent_with_dir(&self, torrent_url: &str, dir: &str) -> Result<String, String> {
         let torrent_data = reqwest::blocking::get(torrent_url)
             .and_then(|r| r.bytes())
             .map_err(|e| format!("Failed to fetch torrent: {}", e))?;
-        let encoded = base64_encode(&torrent_data);
-        let response =
-            self.rpc_call("aria2.addTorrent", &serde_json::json!([encoded, [], {"dir": dir}]))?;
-        response["result"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "No GID returned".to_string())
+        let encoded = BASE64_STANDARD.encode(&torrent_data);
+        let response = self.rpc_call(
+            "aria2.addTorrent",
+            &serde_json::json!([encoded, [], {"dir": dir}]),
+        )?;
+        rpc_string_result(response, "No GID returned")
     }
 
     pub fn add_torrent_b64(&self, b64: &str) -> Result<String, String> {
         let response = self.rpc_call("aria2.addTorrent", &serde_json::json!([b64]))?;
-        response["result"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "No GID returned".to_string())
+        rpc_string_result(response, "No GID returned")
+    }
+
+    pub fn add_torrent_b64_with_dir(&self, b64: &str, dir: &str) -> Result<String, String> {
+        let response = self.rpc_call(
+            "aria2.addTorrent",
+            &serde_json::json!([b64, [], {"dir": dir}]),
+        )?;
+        rpc_string_result(response, "No GID returned")
+    }
+
+    pub fn add_torrent_bytes_with_dir(&self, bytes: &[u8], dir: &str) -> Result<String, String> {
+        self.add_torrent_b64_with_dir(&BASE64_STANDARD.encode(bytes), dir)
+    }
+
+    fn gid_action(&self, method: &str, gid: &str, error: &str) -> Result<String, String> {
+        let response = self.rpc_call(method, &serde_json::json!([gid]))?;
+        rpc_string_result(response, error)
     }
 }
 
@@ -374,26 +404,27 @@ impl Drop for Aria2Manager {
     }
 }
 
-pub fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::new();
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(CHARS[(triple & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
+fn rpc_string_result(response: Value, fallback_error: &str) -> Result<String, String> {
+    if let Some(error) = response.get("error") {
+        return Err(format!("aria2 RPC error: {error}"));
     }
-    result
+    response["result"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| fallback_error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authenticated_params_prefixes_rpc_token_when_secret_is_present() {
+        let aria = Aria2Manager::new_with_secret(6800, "test-secret".to_string());
+
+        let params = aria.authenticated_params(serde_json::json!([["magnet:?xt=urn:btih:test"]]));
+
+        assert_eq!(params[0], "token:test-secret");
+        assert_eq!(params[1], serde_json::json!(["magnet:?xt=urn:btih:test"]));
+    }
 }
